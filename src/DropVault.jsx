@@ -1,13 +1,31 @@
 import { useState, useEffect, useRef } from "react";
-import Peer from "peerjs";
+import { ref, set, onValue, push, remove, off } from "firebase/database";
+import { db } from "./firebase";
 
-// ── constants ────────────────────────────────────────────────────────────────
-const CHUNK_SIZE = 65536; // 64 KB chunks
+// ── WebRTC ICE config ─────────────────────────────────────────────────────────
+const RTC_CONFIG = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    {
+      urls: "turn:turn.cloudflare.com:3478",
+      username: "free",
+      credential: "free",
+    },
+  ],
+};
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const CHUNK_SIZE = 65536; // 64 KB
 const RESUME_KEY = "dvault_resume";
 
-// ── crypto helpers ────────────────────────────────────────────────────────────
+// ── Crypto helpers ────────────────────────────────────────────────────────────
 async function genKeyPair() {
-  return crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+  return crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveKey"],
+  );
 }
 async function exportPub(key) {
   const exported = await crypto.subtle.exportKey("spki", key);
@@ -15,7 +33,13 @@ async function exportPub(key) {
 }
 async function importPub(b64) {
   const raw = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-  return crypto.subtle.importKey("spki", raw, { name: "ECDH", namedCurve: "P-256" }, true, []);
+  return crypto.subtle.importKey(
+    "spki",
+    raw,
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    [],
+  );
 }
 async function deriveSharedKey(privateKey, publicKey) {
   return crypto.subtle.deriveKey(
@@ -23,7 +47,7 @@ async function deriveSharedKey(privateKey, publicKey) {
     privateKey,
     { name: "AES-GCM", length: 256 },
     false,
-    ["encrypt", "decrypt"]
+    ["encrypt", "decrypt"],
   );
 }
 async function encryptChunk(key, data) {
@@ -40,7 +64,7 @@ async function decryptChunk(key, data) {
   return crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, enc);
 }
 
-// ── resume helpers ────────────────────────────────────────────────────────────
+// ── Resume helpers ────────────────────────────────────────────────────────────
 function saveResume(id, n, total) {
   try {
     const s = JSON.parse(localStorage.getItem(RESUME_KEY) || "{}");
@@ -64,7 +88,7 @@ function clearResume(id) {
   } catch (_) {}
 }
 
-// ── format helpers ────────────────────────────────────────────────────────────
+// ── Format helpers ────────────────────────────────────────────────────────────
 function formatBytes(b) {
   if (b < 1024) return b + " B";
   if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
@@ -77,25 +101,87 @@ function formatSpeed(bps) {
   return (bps / 1048576).toFixed(1) + " MB/s";
 }
 function genId() {
-  return "f_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+  return Math.random().toString(36).slice(2, 10).toUpperCase();
 }
 function nowTime() {
   return new Date().toTimeString().slice(0, 8);
 }
 
-// ── LogView sub-component ────────────────────────────────────────────────────
+// ── Firebase signaling helpers ────────────────────────────────────────────────
+// Signaling data is written to /rooms/{roomId}/ and cleaned up after connection.
+// Only SDP offer/answer + ICE candidates pass through Firebase — never file data.
+
+async function createOffer(pc, roomId, myId) {
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await set(ref(db, `rooms/${roomId}/offer`), {
+    sdp: offer.sdp,
+    type: offer.type,
+    from: myId,
+    ts: Date.now(),
+  });
+}
+
+async function createAnswer(pc, roomId, myId) {
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  await set(ref(db, `rooms/${roomId}/answer`), {
+    sdp: answer.sdp,
+    type: answer.type,
+    from: myId,
+    ts: Date.now(),
+  });
+}
+
+function listenForAnswer(roomId, callback) {
+  const r = ref(db, `rooms/${roomId}/answer`);
+  onValue(r, (snap) => {
+    if (snap.val()) callback(snap.val());
+  });
+  return () => off(r);
+}
+
+function listenForOffer(roomId, callback) {
+  const r = ref(db, `rooms/${roomId}/offer`);
+  onValue(r, (snap) => {
+    if (snap.val()) callback(snap.val());
+  });
+  return () => off(r);
+}
+
+function sendIceCandidate(roomId, fromId, candidate) {
+  push(ref(db, `rooms/${roomId}/ice_${fromId}`), candidate.toJSON());
+}
+
+function listenForIce(roomId, fromId, callback) {
+  const r = ref(db, `rooms/${roomId}/ice_${fromId}`);
+  onValue(r, (snap) => {
+    if (!snap.val()) return;
+    Object.values(snap.val()).forEach((c) => callback(c));
+  });
+  return () => off(r);
+}
+
+async function cleanupRoom(roomId) {
+  await remove(ref(db, `rooms/${roomId}`));
+}
+
+// ── LogView component ─────────────────────────────────────────────────────────
 function LogView({ logs, onClear }) {
-  const ref = useRef(null);
+  const ref_ = useRef(null);
   useEffect(() => {
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+    if (ref_.current) ref_.current.scrollTop = ref_.current.scrollHeight;
   }, [logs]);
-
-  const colors = { info: "#a99fff", ok: "#34d399", warn: "#fbbf24", err: "#f87171" };
-
+  const colors = {
+    info: "#a99fff",
+    ok: "#34d399",
+    warn: "#fbbf24",
+    err: "#f87171",
+  };
   return (
     <div className="card">
       <div className="card-label">activity log</div>
-      <div className="log" ref={ref}>
+      <div className="log" ref={ref_}>
         {logs.map((l, i) => (
           <div key={i} className="log-entry">
             <span className="log-time">{l.t}</span>
@@ -104,13 +190,15 @@ function LogView({ logs, onClear }) {
         ))}
       </div>
       <div style={{ marginTop: 10, textAlign: "right" }}>
-        <button className="btn" onClick={onClear}>clear log</button>
+        <button className="btn" onClick={onClear}>
+          clear log
+        </button>
       </div>
     </div>
   );
 }
 
-// ── FileItem sub-component ───────────────────────────────────────────────────
+// ── FileItem component ────────────────────────────────────────────────────────
 function FileItem({ file, id, prog, onRemove }) {
   const pct = prog?.pct || 0;
   const done = prog?.done || false;
@@ -127,7 +215,9 @@ function FileItem({ file, id, prog, onRemove }) {
         </div>
         <span className="file-name">{file.name}</span>
         <span className="file-size">{formatBytes(file.size)}</span>
-        <button className="file-remove" onClick={() => onRemove(id)}>×</button>
+        <button className="file-remove" onClick={() => onRemove(id)}>
+          ×
+        </button>
       </div>
       <div className="progress-bar">
         <div
@@ -143,15 +233,25 @@ function FileItem({ file, id, prog, onRemove }) {
   );
 }
 
-// ── IncomingItem sub-component ────────────────────────────────────────────────
+// ── IncomingItem component ────────────────────────────────────────────────────
 function IncomingItem({ fi }) {
   return (
     <div className="file-item">
       <div className="file-item-header">
         <div className="file-icon">
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-            <path d="M6.5 2v7M3.5 6l3 3 3-3" stroke="#7c6fff" strokeWidth="1" strokeLinecap="round" />
-            <path d="M2 11h9" stroke="#7c6fff" strokeWidth="1" strokeLinecap="round" />
+            <path
+              d="M6.5 2v7M3.5 6l3 3 3-3"
+              stroke="#7c6fff"
+              strokeWidth="1"
+              strokeLinecap="round"
+            />
+            <path
+              d="M2 11h9"
+              stroke="#7c6fff"
+              strokeWidth="1"
+              strokeLinecap="round"
+            />
           </svg>
         </div>
         <span className="file-name">{fi.name}</span>
@@ -160,7 +260,10 @@ function IncomingItem({ fi }) {
       <div className="progress-bar">
         <div
           className="progress-fill"
-          style={{ width: fi.pct + "%", background: fi.done ? "#34d399" : "#7c6fff" }}
+          style={{
+            width: fi.pct + "%",
+            background: fi.done ? "#34d399" : "#7c6fff",
+          }}
         />
       </div>
       <div className="progress-label">
@@ -173,7 +276,7 @@ function IncomingItem({ fi }) {
   );
 }
 
-// ── StatBar sub-component ────────────────────────────────────────────────────
+// ── StatBar component ─────────────────────────────────────────────────────────
 function StatBar({ stats }) {
   return (
     <div className="stats-grid">
@@ -193,119 +296,198 @@ function StatBar({ stats }) {
   );
 }
 
-// ── Main App component ────────────────────────────────────────────────────────
-export default function DropVault() {
+// ── Main App ──────────────────────────────────────────────────────────────────
+export default function App() {
   const [tab, setTab] = useState("send");
-  const [peerId, setPeerId] = useState("");
-  const [connStatus, setConnStatus] = useState("init"); // init | connecting | online | error
-  const [connLabel, setConnLabel] = useState("initializing...");
+  const [myId, setMyId] = useState("");
+  const [connStatus, setConnStatus] = useState("init");
+  const [connLabel, setConnLabel] = useState("generating id...");
   const [remotePeer, setRemotePeer] = useState("");
   const [connectedTo, setConnectedTo] = useState("");
   const [keyReady, setKeyReady] = useState(false);
-  const [files, setFiles] = useState([]); // [{ file, id }]
-  const [progress, setProgress] = useState({}); // { [id]: { pct, spd, done } }
-  const [incoming, setIncoming] = useState({}); // { [fileId]: { name, size, pct, done } }
-  const [logs, setLogs] = useState([{ t: nowTime(), m: "peer initializing...", k: "info" }]);
+  const [files, setFiles] = useState([]);
+  const [progress, setProgress] = useState({});
+  const [incoming, setIncoming] = useState({});
+  const [logs, setLogs] = useState([
+    { t: nowTime(), m: "initializing...", k: "info" },
+  ]);
   const [dragging, setDragging] = useState(false);
   const [stats, setStats] = useState({ sent: 0, speed: "—", total: "0" });
   const [sending, setSending] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  // Refs for mutable state that shouldn't re-render
-  const peerRef = useRef(null);
-  const connRef = useRef(null);
-  const sharedKeyRef = useRef(null);
-  const incomingDataRef = useRef({}); // stores raw chunks
+  const pcRef = useRef(null); // RTCPeerConnection
+  const dcRef = useRef(null); // RTCDataChannel
+  const sharedKeyRef = useRef(null); // AES-GCM session key
+  const myIdRef = useRef(""); // our peer ID
+  const incomingDataRef = useRef({}); // raw chunk storage
   const resumeFromRef = useRef({}); // { [fileId]: chunkIndex }
+  const cleanupListeners = useRef([]); // Firebase listener unsubscribers
 
   const addLog = (m, k = "info") =>
     setLogs((l) => [...l.slice(-99), { t: nowTime(), m, k }]);
 
-  // ── Init PeerJS ────────────────────────────────────────────────────────────
+  // ── Generate peer ID and listen for incoming offers ───────────────────────
   useEffect(() => {
-    // NOTE: Replace this block with Firebase signaling when ready.
-    // See FIREBASE_SIGNALING_SETUP.md comment at the bottom of this file.
-    const p = new Peer(undefined, {
-      host: "peerjs.com",
-      port: 443,
-      path: "/",
-      secure: true,
-      config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] },
+    const id = genId();
+    myIdRef.current = id;
+    setMyId(id);
+    setConnStatus("online");
+    setConnLabel("ready · " + id);
+    addLog("your peer id: " + id, "ok");
+
+    // Listen for an incoming offer on our room
+    const unsub = listenForOffer(id, async (offer) => {
+      if (pcRef.current) return; // already connected
+      addLog("incoming connection request from " + offer.from, "info");
+      await initConnection(false, id, offer.from, offer);
     });
+    cleanupListeners.current.push(unsub);
 
-    peerRef.current = p;
-
-    p.on("open", (id) => {
-      setPeerId(id);
-      setConnStatus("online");
-      setConnLabel("ready · " + id.slice(0, 8) + "...");
-      addLog("peer ready: " + id, "ok");
-    });
-
-    p.on("connection", (c) => {
-      connRef.current = c;
-      addLog("incoming connection from: " + c.peer, "ok");
-      setupConnection(c);
-    });
-
-    p.on("error", (err) => {
-      setConnStatus("error");
-      setConnLabel("error: " + err.type);
-      addLog("peer error: " + err.type, "err");
-    });
-
-    p.on("disconnected", () => {
-      setConnStatus("connecting");
-      setConnLabel("reconnecting...");
-      addLog("disconnected, retrying...", "warn");
-      setTimeout(() => p.reconnect(), 2000);
-    });
-
-    return () => p.destroy();
+    return () => {
+      cleanupListeners.current.forEach((fn) => fn());
+      if (pcRef.current) pcRef.current.close();
+      cleanupRoom(id);
+    };
   }, []);
 
-  // ── Setup a data connection (outgoing or incoming) ─────────────────────────
-  async function setupConnection(c) {
-    setConnStatus("connecting");
-    setConnLabel("handshaking...");
+  // ── Init RTCPeerConnection ────────────────────────────────────────────────
+  // isCaller=true  → we send the offer  (sender side)
+  // isCaller=false → we send the answer (receiver side)
+  async function initConnection(
+    isCaller,
+    myRoomId,
+    remoteId,
+    incomingOffer = null,
+  ) {
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    pcRef.current = pc;
 
-    const keyPair = await genKeyPair();
+    // ICE candidates → Firebase
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate)
+        sendIceCandidate(
+          remoteId, // always receiver's room
+          isCaller ? "caller" : "callee", // fixed role key
+          candidate,
+        );
+    };
 
-    c.on("open", async () => {
-      setConnectedTo(c.peer);
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      addLog(
+        "WebRTC: " + state,
+        state === "connected" ? "ok" : state === "failed" ? "err" : "info",
+      );
+      if (state === "connected") {
+        setConnStatus("online");
+        setConnLabel("connected · e2e encrypted");
+        setConnectedTo(remoteId);
+        // Clean up signaling data — no longer needed
+        cleanupRoom(isCaller ? remoteId : remoteId); // both clean remoteId now
+      }
+      if (state === "failed" || state === "disconnected") {
+        setConnStatus("error");
+        setConnLabel("connection lost");
+        setKeyReady(false);
+        setConnectedTo("");
+      }
+    };
+
+    if (isCaller) {
+      // ── CALLER: create data channel, make offer ──
+      const dc = pc.createDataChannel("dropvault", { ordered: true });
+      dcRef.current = dc;
+      setupDataChannel(dc);
+
+      await createOffer(pc, remoteId, myIdRef.current);
+      addLog("offer sent, waiting for answer...", "info");
+
+      // Listen for answer (answer will be written to our own room)
+      const unsubAnswer = listenForAnswer(myRoomId, async (answer) => {
+        if (pc.remoteDescription) return;
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        addLog("answer received from " + remoteId, "ok");
+      });
+      cleanupListeners.current.push(unsubAnswer);
+
+      // Listen for remote ICE candidates (they'll write to our room)
+      const unsubIce = listenForIce(myRoomId, "callee", async (c) => {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(c));
+        } catch (_) {}
+      });
+      cleanupListeners.current.push(unsubIce);
+    } else {
+      // ── CALLEE: set remote offer, create answer ──
+      pc.ondatachannel = ({ channel }) => {
+        dcRef.current = channel;
+        setupDataChannel(channel);
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription(incomingOffer));
+      await createAnswer(pc, remoteId, myIdRef.current);
+      addLog("answer sent to " + remoteId, "ok");
+
+      // Listen for caller's ICE candidates (they write to our room)
+      const unsubIce = listenForIce(myRoomId, "caller", async (c) => {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(c));
+        } catch (_) {}
+      });
+      cleanupListeners.current.push(unsubIce);
+    }
+  }
+
+  // ── Setup data channel events + key exchange ──────────────────────────────
+  function setupDataChannel(dc) {
+    dc.binaryType = "arraybuffer";
+    let keyPairPromise = genKeyPair();
+
+    dc.onopen = async () => {
       addLog("data channel open — starting key exchange", "info");
-      const pub = await exportPub(keyPair.publicKey);
-      c.send(JSON.stringify({ type: "key_exchange", pub }));
-    });
+      setConnStatus("connecting");
+      setConnLabel("exchanging keys...");
+      const kp = await keyPairPromise;
+      const pub = await exportPub(kp.publicKey);
+      dc.send(JSON.stringify({ type: "key_exchange", pub }));
+      // Store keypair for when we receive their key
+      dc._myKeyPair = kp;
+    };
 
-    c.on("data", async (data) => {
-      // ── JSON control messages ──
+    dc.onmessage = async ({ data }) => {
       if (typeof data === "string") {
         const msg = JSON.parse(data);
 
         // ECDH key exchange
         if (msg.type === "key_exchange") {
+          const kp = await (dc._myKeyPair || genKeyPair());
           const remotePubKey = await importPub(msg.pub);
-          const sk = await deriveSharedKey(keyPair.privateKey, remotePubKey);
+          const sk = await deriveSharedKey(kp.privateKey, remotePubKey);
           sharedKeyRef.current = sk;
           setKeyReady(true);
           setConnStatus("online");
-          setConnLabel("connected · e2e encrypted");
-          addLog("AES-256-GCM session key established", "ok");
-          // Send our key back if we haven't yet
-          const myPub = await exportPub(keyPair.publicKey);
-          if (msg.pub !== myPub) {
-            c.send(JSON.stringify({ type: "key_ack", pub: myPub }));
+          setConnLabel("connected · AES-256-GCM ready");
+          addLog("session key established — ready to transfer", "ok");
+          // Echo our key if we haven't sent yet
+          if (!dc._sentKey) {
+            dc._sentKey = true;
+            const pub = await exportPub(kp.publicKey);
+            dc.send(JSON.stringify({ type: "key_ack", pub }));
           }
         }
 
         if (msg.type === "key_ack") {
-          const remotePubKey = await importPub(msg.pub);
-          const sk = await deriveSharedKey(keyPair.privateKey, remotePubKey);
-          sharedKeyRef.current = sk;
-          setKeyReady(true);
-          setConnStatus("online");
-          setConnLabel("connected · e2e encrypted");
-          addLog("key ack — session ready", "ok");
+          if (!sharedKeyRef.current) {
+            const kp = dc._myKeyPair;
+            const remotePubKey = await importPub(msg.pub);
+            const sk = await deriveSharedKey(kp.privateKey, remotePubKey);
+            sharedKeyRef.current = sk;
+            setKeyReady(true);
+            setConnStatus("online");
+            setConnLabel("connected · AES-256-GCM ready");
+            addLog("session key established — ready to transfer", "ok");
+          }
         }
 
         // Incoming file metadata
@@ -322,22 +504,32 @@ export default function DropVault() {
           };
           setIncoming((prev) => ({
             ...prev,
-            [msg.fileId]: { name: msg.name, size: msg.size, pct: 0, done: false },
+            [msg.fileId]: {
+              name: msg.name,
+              size: msg.size,
+              pct: 0,
+              done: false,
+            },
           }));
-          // Tell sender which chunk to resume from
-          c.send(JSON.stringify({ type: "resume_ack", fileId: msg.fileId, from: resumeFrom }));
-          addLog(`incoming: ${msg.name} (${formatBytes(msg.size)})${resumeFrom > 0 ? " resuming from " + resumeFrom : ""}`, "info");
+          dc.send(
+            JSON.stringify({
+              type: "resume_ack",
+              fileId: msg.fileId,
+              from: resumeFrom,
+            }),
+          );
+          addLog(
+            `incoming: ${msg.name} (${formatBytes(msg.size)})${resumeFrom > 0 ? " · resuming" : ""}`,
+            "info",
+          );
         }
 
-        // Sender learns where to resume from
         if (msg.type === "resume_ack") {
           resumeFromRef.current[msg.fileId] = msg.from;
-          if (msg.from > 0) addLog("resume acknowledged from chunk " + msg.from, "info");
+          if (msg.from > 0) addLog("resuming from chunk " + msg.from, "warn");
         }
-      }
-
-      // ── Binary chunk data ──
-      else {
+      } else {
+        // Binary chunk
         const buf = data instanceof ArrayBuffer ? data : data.buffer;
         const dv = new DataView(buf);
         const fidLen = dv.getUint8(0);
@@ -353,53 +545,58 @@ export default function DropVault() {
         fi.got++;
 
         const pct = Math.round((fi.got / fi.totalChunks) * 100);
-        setIncoming((prev) => ({ ...prev, [fileId]: { ...prev[fileId], pct } }));
+        setIncoming((prev) => ({
+          ...prev,
+          [fileId]: { ...prev[fileId], pct },
+        }));
         saveResume("r_" + fileId, fi.got, fi.totalChunks);
 
         // All chunks received — assemble and download
         if (fi.got >= fi.totalChunks) {
           const buffers = [];
-          for (let i = 0; i < fi.totalChunks; i++) {
+          for (let i = 0; i < fi.totalChunks; i++)
             if (fi.chunks[i]) buffers.push(fi.chunks[i]);
-          }
-          const blob = new Blob(buffers, { type: fi.mimeType || "application/octet-stream" });
+          const blob = new Blob(buffers, {
+            type: fi.mimeType || "application/octet-stream",
+          });
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
           a.download = fi.name;
           a.click();
           URL.revokeObjectURL(url);
-          setIncoming((prev) => ({ ...prev, [fileId]: { ...prev[fileId], pct: 100, done: true } }));
+          setIncoming((prev) => ({
+            ...prev,
+            [fileId]: { ...prev[fileId], pct: 100, done: true },
+          }));
           clearResume("r_" + fileId);
           addLog("file saved: " + fi.name, "ok");
         }
       }
-    });
+    };
 
-    c.on("close", () => {
-      setConnectedTo("");
+    dc.onclose = () => {
       setKeyReady(false);
+      setConnectedTo("");
       setConnStatus("online");
-      setConnLabel("ready");
-      addLog("connection closed", "warn");
-    });
+      setConnLabel("ready · " + myIdRef.current);
+      addLog("data channel closed", "warn");
+    };
 
-    c.on("error", (err) => addLog("connection error: " + err, "err"));
+    dc.onerror = (e) => addLog("data channel error: " + e, "err");
   }
 
-  // ── Connect to remote peer ─────────────────────────────────────────────────
-  function connectToPeer() {
-    if (!remotePeer.trim() || !peerRef.current) return;
-    addLog("connecting to: " + remotePeer, "info");
-    const c = peerRef.current.connect(remotePeer.trim(), {
-      reliable: true,
-      serialization: "binary",
-    });
-    connRef.current = c;
-    setupConnection(c);
+  // ── Initiate outgoing connection ──────────────────────────────────────────
+  async function connectToPeer() {
+    if (!remotePeer.trim()) return;
+    const target = remotePeer.trim().toUpperCase();
+    addLog("connecting to: " + target, "info");
+    setConnStatus("connecting");
+    setConnLabel("sending offer...");
+    await initConnection(true, myIdRef.current, target);
   }
 
-  // ── File drop/select handlers ──────────────────────────────────────────────
+  // ── File handlers ─────────────────────────────────────────────────────────
   function addFiles(fileList) {
     const items = [...fileList].map((f) => ({ file: f, id: genId() }));
     setFiles((prev) => [...prev, ...items]);
@@ -407,23 +604,26 @@ export default function DropVault() {
 
   function removeFile(id) {
     setFiles((prev) => prev.filter((f) => f.id !== id));
-    setProgress((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    setProgress((prev) => {
+      const n = { ...prev };
+      delete n[id];
+      return n;
+    });
   }
 
-  // ── Send all queued files ──────────────────────────────────────────────────
+  // ── Send all files ────────────────────────────────────────────────────────
   async function sendAll() {
-    if (!connRef.current || !sharedKeyRef.current) return;
+    if (!dcRef.current || !sharedKeyRef.current) return;
     setSending(true);
-    let filesSent = 0;
-    let bytesSent = 0;
+    let filesSent = 0,
+      bytesSent = 0;
 
     for (const { file, id } of files) {
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
       const rs = getResume(id);
       const savedChunk = rs ? rs.n : 0;
 
-      // Send metadata, receiver replies with resume_ack
-      connRef.current.send(
+      dcRef.current.send(
         JSON.stringify({
           type: "file_meta",
           fileId: id,
@@ -431,19 +631,21 @@ export default function DropVault() {
           size: file.size,
           mtype: file.type,
           total: totalChunks,
-        })
+        }),
       );
 
-      addLog(`sending: ${file.name}${savedChunk > 0 ? " (resume from " + savedChunk + ")" : ""}`, "info");
-
-      // Wait briefly for resume_ack
+      addLog(
+        `sending: ${file.name}${savedChunk > 0 ? " (resume from " + savedChunk + ")" : ""}`,
+        "info",
+      );
       await new Promise((r) => setTimeout(r, 400));
       const startChunk = resumeFromRef.current[id] ?? savedChunk;
       const t0 = Date.now();
 
       for (let ci = startChunk; ci < totalChunks; ci++) {
-        const slice = file.slice(ci * CHUNK_SIZE, (ci + 1) * CHUNK_SIZE);
-        const raw = await slice.arrayBuffer();
+        const raw = await file
+          .slice(ci * CHUNK_SIZE, (ci + 1) * CHUNK_SIZE)
+          .arrayBuffer();
         const enc = await encryptChunk(sharedKeyRef.current, raw);
 
         // Packet layout: [1 byte: fileId length][fileId bytes][4 bytes: chunk index][encrypted data]
@@ -457,13 +659,16 @@ export default function DropVault() {
         const packet = new Uint8Array(header.byteLength + enc.byteLength);
         packet.set(new Uint8Array(header));
         packet.set(new Uint8Array(enc), header.byteLength);
-        connRef.current.send(packet.buffer);
+        dcRef.current.send(packet.buffer);
 
         const elapsed = (Date.now() - t0) / 1000 || 0.001;
         const speed = ((ci - startChunk + 1) * CHUNK_SIZE) / elapsed;
         const pct = Math.round(((ci + 1) / totalChunks) * 100);
 
-        setProgress((prev) => ({ ...prev, [id]: { pct, spd: speed, done: false } }));
+        setProgress((prev) => ({
+          ...prev,
+          [id]: { pct, spd: speed, done: false },
+        }));
         setStats((s) => ({ ...s, speed: formatSpeed(speed) }));
         saveResume(id, ci + 1, totalChunks);
 
@@ -471,21 +676,40 @@ export default function DropVault() {
         if (ci % 8 === 0) await new Promise((r) => setTimeout(r, 0));
       }
 
-      setProgress((prev) => ({ ...prev, [id]: { pct: 100, spd: 0, done: true } }));
+      setProgress((prev) => ({
+        ...prev,
+        [id]: { pct: 100, spd: 0, done: true },
+      }));
       clearResume(id);
       filesSent++;
       bytesSent += file.size;
-      setStats({ sent: filesSent, speed: "—", total: (bytesSent / 1048576).toFixed(1) });
+      setStats({
+        sent: filesSent,
+        speed: "—",
+        total: (bytesSent / 1048576).toFixed(1),
+      });
       addLog("done: " + file.name, "ok");
     }
 
     setSending(false);
-    addLog("all files transferred successfully", "ok");
+    addLog("all files transferred", "ok");
   }
 
-  // ── Status dot color ───────────────────────────────────────────────────────
-  const dotColors = { online: "#34d399", connecting: "#fbbf24", error: "#f87171", init: "#556" };
+  function copyId() {
+    navigator.clipboard.writeText(myId);
+    setCopied(true);
+    addLog("peer id copied", "ok");
+    setTimeout(() => setCopied(false), 1500);
+  }
 
+  const dotColors = {
+    online: "#34d399",
+    connecting: "#fbbf24",
+    error: "#f87171",
+    init: "#556",
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="app">
       {/* Header */}
@@ -493,16 +717,41 @@ export default function DropVault() {
         <div className="logo">
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
             <path d="M9 2L13 6H10.5V11H7.5V6H5L9 2Z" fill="white" />
-            <path d="M3 10V15H15V10" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-            <path d="M6 12.5H12" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+            <path
+              d="M3 10V15H15V10"
+              stroke="white"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+            <path
+              d="M6 12.5H12"
+              stroke="white"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
           </svg>
         </div>
         <div>
           <h1>DropVault</h1>
-          <p className="subtitle">P2P · AES-256-GCM · No server storage</p>
+          <p className="subtitle">
+            P2P · AES-256-GCM · Firebase signaling · No file storage
+          </p>
         </div>
         <div className="status-bar">
-          <div className="dot" style={{ background: dotColors[connStatus], boxShadow: connStatus === "online" ? "0 0 6px #34d399" : "none" }} />
+          <div
+            className="dot"
+            style={{
+              background: dotColors[connStatus],
+              boxShadow:
+                connStatus === "online"
+                  ? "0 0 6px #34d399"
+                  : connStatus === "connecting"
+                    ? "0 0 6px #fbbf24"
+                    : "none",
+              animation:
+                connStatus === "connecting" ? "pulse 1s infinite" : "none",
+            }}
+          />
           <span>{connLabel}</span>
         </div>
       </header>
@@ -510,12 +759,28 @@ export default function DropVault() {
       {/* Badges */}
       <div className="badges">
         {[
-          { label: "AES-256-GCM encrypted", color: "#34d399", bg: "rgba(52,211,153,0.08)" },
-          { label: "WebRTC P2P", color: "#a99fff", bg: "rgba(124,111,255,0.08)" },
-          { label: "resumable transfers", color: "#fbbf24", bg: "rgba(251,191,36,0.08)" },
-          { label: "multi-file", color: "#556", bg: "transparent" },
+          {
+            label: "AES-256-GCM encrypted",
+            color: "#34d399",
+            bg: "rgba(52,211,153,0.08)",
+          },
+          {
+            label: "WebRTC P2P",
+            color: "#a99fff",
+            bg: "rgba(124,111,255,0.08)",
+          },
+          {
+            label: "Firebase signaling",
+            color: "#fbbf24",
+            bg: "rgba(251,191,36,0.08)",
+          },
+          { label: "resumable", color: "#556", bg: "transparent" },
         ].map((b) => (
-          <span key={b.label} className="badge" style={{ borderColor: b.color, color: b.color, background: b.bg }}>
+          <span
+            key={b.label}
+            className="badge"
+            style={{ borderColor: b.color, color: b.color, background: b.bg }}
+          >
             {b.label}
           </span>
         ))}
@@ -524,25 +789,25 @@ export default function DropVault() {
       {/* Tabs */}
       <div className="tabs">
         {["send", "receive", "log"].map((t) => (
-          <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
+          <button
+            key={t}
+            className={`tab ${tab === t ? "active" : ""}`}
+            onClick={() => setTab(t)}
+          >
             {t}
           </button>
         ))}
       </div>
 
-      {/* ── SEND TAB ── */}
+      {/* SEND TAB */}
       {tab === "send" && (
         <div>
           <div className="card">
             <div className="card-label">your peer id — share with receiver</div>
             <div className="pid-box">
-              <code className="pid">{peerId || "connecting..."}</code>
-              <button
-                className="btn"
-                disabled={!peerId}
-                onClick={() => { navigator.clipboard.writeText(peerId); addLog("peer id copied", "ok"); }}
-              >
-                copy
+              <code className="pid">{myId || "generating..."}</code>
+              <button className="btn" disabled={!myId} onClick={copyId}>
+                {copied ? "copied ✓" : "copy"}
               </button>
             </div>
           </div>
@@ -553,17 +818,25 @@ export default function DropVault() {
               <input
                 type="text"
                 value={remotePeer}
-                onChange={(e) => setRemotePeer(e.target.value)}
+                onChange={(e) => setRemotePeer(e.target.value.toUpperCase())}
                 onKeyDown={(e) => e.key === "Enter" && connectToPeer()}
                 placeholder="paste receiver's peer id..."
+                style={{ textTransform: "uppercase", letterSpacing: 2 }}
               />
-              <button className="btn-primary" disabled={!peerId || !remotePeer.trim()} onClick={connectToPeer}>
-                connect
+              <button
+                className="btn-primary"
+                disabled={!myId || !remotePeer.trim() || !!connectedTo}
+                onClick={connectToPeer}
+              >
+                {connectedTo ? "connected" : "connect"}
               </button>
             </div>
             {connectedTo && (
               <p className="conn-note">
-                connected to {connectedTo.slice(0, 20)}... {keyReady ? "· keys exchanged ✓" : "· exchanging keys..."}
+                connected to {connectedTo}{" "}
+                {keyReady
+                  ? "· AES-256 session active ✓"
+                  : "· exchanging keys..."}
               </p>
             )}
           </div>
@@ -572,31 +845,66 @@ export default function DropVault() {
             <div className="card-label">files to send</div>
             <div
               className={`drop-zone ${dragging ? "dragging" : ""}`}
-              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
               onDragLeave={() => setDragging(false)}
-              onDrop={(e) => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragging(false);
+                addFiles(e.dataTransfer.files);
+              }}
               onClick={() => document.getElementById("file-input").click()}
             >
-              <input id="file-input" type="file" multiple style={{ display: "none" }} onChange={(e) => addFiles(e.target.files)} />
+              <input
+                id="file-input"
+                type="file"
+                multiple
+                style={{ display: "none" }}
+                onChange={(e) => addFiles(e.target.files)}
+              />
               <div className="drop-icon">
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                   <path d="M9 2L13 6H10.5V12H7.5V6H5L9 2Z" fill="#7c6fff" />
-                  <path d="M2 14V16H16V14" stroke="#7c6fff" strokeWidth="1.5" strokeLinecap="round" />
+                  <path
+                    d="M2 14V16H16V14"
+                    stroke="#7c6fff"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
                 </svg>
               </div>
-              <p className="drop-text"><span className="drop-accent">drop files here</span> or click to browse</p>
-              <p className="drop-sub">multiple files · any size · encrypted before sending</p>
+              <p className="drop-text">
+                <span className="drop-accent">drop files here</span> or click to
+                browse
+              </p>
+              <p className="drop-sub">
+                multiple files · any size · encrypted locally before sending
+              </p>
             </div>
 
             <div className="file-list">
               {files.map(({ file, id }) => (
-                <FileItem key={id} file={file} id={id} prog={progress[id]} onRemove={removeFile} />
+                <FileItem
+                  key={id}
+                  file={file}
+                  id={id}
+                  prog={progress[id]}
+                  onRemove={removeFile}
+                />
               ))}
             </div>
 
             <div className="actions">
               {files.length > 0 && (
-                <button className="btn-danger" onClick={() => { setFiles([]); setProgress({}); }}>
+                <button
+                  className="btn-danger"
+                  onClick={() => {
+                    setFiles([]);
+                    setProgress({});
+                  }}
+                >
                   clear all
                 </button>
               )}
@@ -614,19 +922,15 @@ export default function DropVault() {
         </div>
       )}
 
-      {/* ── RECEIVE TAB ── */}
+      {/* RECEIVE TAB */}
       {tab === "receive" && (
         <div>
           <div className="card">
             <div className="card-label">your peer id — share with sender</div>
             <div className="pid-box">
-              <code className="pid">{peerId || "connecting..."}</code>
-              <button
-                className="btn"
-                disabled={!peerId}
-                onClick={() => { navigator.clipboard.writeText(peerId); addLog("peer id copied", "ok"); }}
-              >
-                copy
+              <code className="pid">{myId || "generating..."}</code>
+              <button className="btn" disabled={!myId} onClick={copyId}>
+                {copied ? "copied ✓" : "copy"}
               </button>
             </div>
           </div>
@@ -635,7 +939,11 @@ export default function DropVault() {
             <div className="card-label">incoming transfers</div>
             {Object.keys(incoming).length === 0 ? (
               <div className="empty-state">
-                {keyReady ? "ready — waiting for files..." : "waiting for connection..."}
+                {keyReady
+                  ? "ready — waiting for files..."
+                  : connectedTo
+                    ? "exchanging keys..."
+                    : "waiting for connection..."}
               </div>
             ) : (
               Object.entries(incoming).map(([id, fi]) => (
@@ -646,11 +954,12 @@ export default function DropVault() {
         </div>
       )}
 
-      {/* ── LOG TAB ── */}
+      {/* LOG TAB */}
       {tab === "log" && <LogView logs={logs} onClear={() => setLogs([])} />}
 
       <p className="footer">
-        signaling via peerjs.com · no file data touches any server · swap with firebase for production
+        only sdp/ice signaling passes through firebase · no file data ever
+        leaves your browser unencrypted
       </p>
     </div>
   );
