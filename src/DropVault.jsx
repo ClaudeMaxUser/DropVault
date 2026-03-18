@@ -110,6 +110,33 @@ function formatBytes(b) {
   if (b < 1073741824) return (b / 1048576).toFixed(1) + " MB";
   return (b / 1073741824).toFixed(2) + " GB";
 }
+// Format RTC/WebRTC error events into a readable string for logs
+function formatRtcError(e) {
+  try {
+    if (!e) return String(e);
+    // Prefer event.error (RTCErrorEvent) or nested Error-like objects
+    const err = e.error || e.detail || e;
+    if (!err) return String(e);
+    if (typeof err === "string") return err;
+    if (typeof err === "object") {
+      const parts = [];
+      if (err.name) parts.push(err.name);
+      if (err.message) parts.push(err.message);
+      if (err.code) parts.push("code:" + err.code);
+      if (parts.length) return parts.join(" - ");
+      // Fallback to toString if available
+      try {
+        return err.toString();
+      } catch (_) {
+        return JSON.stringify(err);
+      }
+    }
+    if (e.message) return e.message;
+    return String(e);
+  } catch (_) {
+    return "RTC error";
+  }
+}
 function formatSpeed(bps) {
   if (bps < 1024) return bps.toFixed(0) + " B/s";
   if (bps < 1048576) return (bps / 1024).toFixed(1) + " KB/s";
@@ -331,6 +358,7 @@ export default function App() {
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
   const [connModal, setConnModal] = useState(null); // { trigger, remotePub, remoteFp, localFp, dc }
+  const [disconnectModal, setDisconnectModal] = useState(false);
 
   // Prevent background interaction/scroll when modal is open
   useEffect(() => {
@@ -415,11 +443,22 @@ export default function App() {
         // Clean up signaling data — no longer needed
         cleanupRoom(isCaller ? remoteId : remoteId); // both clean remoteId now
       }
-      if (state === "failed" || state === "disconnected") {
+      if (state === "failed" || state === "disconnected" || state === "closed") {
         setConnStatus("error");
         setConnLabel("connection lost");
         setKeyReady(false);
         setConnectedTo("");
+        // ensure refs are cleared so we can accept new incoming offers
+        try {
+          if (pcRef.current) {
+            try {
+              pcRef.current.close();
+            } catch (_) {}
+          }
+        } catch (_) {}
+        pcRef.current = null;
+        dcRef.current = null;
+        sharedKeyRef.current = null;
       }
     };
 
@@ -483,9 +522,14 @@ export default function App() {
       const kp = await keyPairPromise;
       const pub = await exportPub(kp.publicKey);
       dc._myKeyPair = kp;
+      const localFp = await fingerprintFromPub(pub);
+      // If we're the initiator, show our local fingerprint so user can read it to remote.
       if (dc._isCaller) {
-        dc.send(JSON.stringify({ type: "connect_request", pub }));
-        addLog("connect request sent — waiting for remote approval", "info");
+        setConnModal({ trigger: "outgoing", localFp, dc });
+        try {
+          dc.send(JSON.stringify({ type: "connect_request", pub }));
+          addLog("connect request sent — waiting for remote approval", "info");
+        } catch (_) {}
       }
     };
 
@@ -519,7 +563,10 @@ export default function App() {
           setConnStatus("error");
           setConnLabel("connection rejected");
           try {
-            if (pcRef.current) pcRef.current.close();
+            if (pcRef.current) try { pcRef.current.close(); } catch (_) {}
+            pcRef.current = null;
+            dcRef.current = null;
+            sharedKeyRef.current = null;
           } catch (_) {}
           return;
         }
@@ -614,10 +661,12 @@ export default function App() {
       setConnectedTo("");
       setConnStatus("online");
       setConnLabel("ready · " + myIdRef.current);
+      // clear data channel ref so new incoming offers are accepted
+      dcRef.current = null;
       addLog("data channel closed", "warn");
     };
 
-    dc.onerror = (e) => addLog("data channel error: " + e, "err");
+    dc.onerror = (e) => addLog("data channel error: " + formatRtcError(e), "err");
   }
 
   // Modal handlers: accept or reject incoming/accepted connection
@@ -658,9 +707,54 @@ export default function App() {
     setConnStatus("error");
     setConnLabel("connection rejected");
     try {
-      if (pcRef.current) pcRef.current.close();
+      if (pcRef.current) try { pcRef.current.close(); } catch (_) {}
+      pcRef.current = null;
+      dcRef.current = null;
+      sharedKeyRef.current = null;
     } catch (_) {}
     addLog("connection rejected by user", "warn");
+  }
+
+  // Disconnect flow
+  function requestDisconnect() {
+    setDisconnectModal(true);
+    setConnectedTo("");
+    setRemotePeer("");
+  }
+
+  async function handleDisconnectConfirm() {
+    setDisconnectModal(false);
+    try {
+      if (pcRef.current) {
+        pcRef.current.close();
+      }
+      if (dcRef.current) {
+        try {
+          dcRef.current.close();
+        } catch (_) {}
+      }
+      // ensure refs cleared so incoming offers will be handled
+      pcRef.current = null;
+      dcRef.current = null;
+      sharedKeyRef.current = null;
+      // cleanup state
+      sharedKeyRef.current = null;
+      setKeyReady(false);
+      setConnectedTo("");
+      setConnStatus("online");
+      setConnLabel("ready · " + myIdRef.current);
+      addLog("connection closed by user", "warn");
+      // attempt to cleanup signaling room for remote
+      try {
+        if (connectedTo) await cleanupRoom(connectedTo);
+      } catch (_) {}
+    } catch (e) {
+      addLog("error during disconnect", "err");
+    }
+  }
+
+  function handleDisconnectCancel() {
+    setDisconnectModal(false);
   }
 
   // ── Initiate outgoing connection ──────────────────────────────────────────
@@ -894,19 +988,26 @@ export default function App() {
             <div className="row">
               <input
                 type="text"
-                value={remotePeer}
+                value={remotePeer ? remotePeer : connectedTo}
                 onChange={(e) => setRemotePeer(e.target.value.toUpperCase())}
                 onKeyDown={(e) => e.key === "Enter" && connectToPeer()}
                 placeholder="paste receiver's peer id..."
                 style={{ textTransform: "uppercase", letterSpacing: 2 }}
+                disabled={!!connectedTo}
               />
-              <button
-                className="btn-primary"
-                disabled={!myId || !remotePeer.trim() || !!connectedTo}
-                onClick={connectToPeer}
-              >
-                {connectedTo ? "connected" : "connect"}
-              </button>
+              {connectedTo ? (
+                <button className="btn-danger" onClick={requestDisconnect}>
+                  disconnect
+                </button>
+              ) : (
+                <button
+                  className="btn-primary"
+                  disabled={!myId || !remotePeer.trim()}
+                  onClick={connectToPeer}
+                >
+                  connect
+                </button>
+              )}
             </div>
             {connectedTo && (
               <p className="conn-note">
@@ -1038,18 +1139,20 @@ export default function App() {
       {connModal && (
         <div className="modal-overlay">
           <div className="modal">
-            <h3>Incoming connection</h3>
-            <p>
-              Verify the short fingerprint with your remote peer before accepting.
-            </p>
+                  <h3>{connModal.trigger === "outgoing" ? "Outgoing connection" : "Incoming connection"}</h3>
+                  <p>
+                    {connModal.trigger === "outgoing"
+                      ? "Share the following fingerprint with your remote peer so they can verify it. Waiting for their acceptance."
+                      : "Verify the short fingerprint with your remote peer before accepting."}
+                  </p>
             <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
               <div style={{ flex: 1 }}>
                 <div className="card-label">their fingerprint</div>
-                <div style={{ fontFamily: "monospace", marginTop: 6 }}>{connModal.remoteFp}</div>
+                <div style={{ fontFamily: "monospace", marginTop: 6 }}>{connModal.remoteFp || "—"}</div>
               </div>
               <div style={{ flex: 1 }}>
                 <div className="card-label">your fingerprint</div>
-                <div style={{ fontFamily: "monospace", marginTop: 6 }}>{connModal.localFp}</div>
+                <div style={{ fontFamily: "monospace", marginTop: 6 }}>{connModal.localFp || "—"}</div>
               </div>
             </div>
             <div style={{ marginTop: 12, textAlign: "right" }}>
@@ -1064,8 +1167,25 @@ export default function App() {
         </div>
       )}
 
+      {disconnectModal && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>Disconnect</h3>
+            <p>Are you sure you want to disconnect? This will stop any active transfer.</p>
+            <div style={{ marginTop: 12, textAlign: "right" }}>
+              <button className="btn" onClick={handleDisconnectCancel} style={{ marginRight: 8 }}>
+                cancel
+              </button>
+              <button className="btn-danger" onClick={handleDisconnectConfirm}>
+                disconnect
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <p className="footer">
-        only sdp/ice signaling passes through firebase · no file data ever
+        only sdp/ice signaling passes through server · no data ever
         leaves your browser unencrypted
       </p>
     </div>
