@@ -50,6 +50,21 @@ async function deriveSharedKey(privateKey, publicKey) {
     ["encrypt", "decrypt"],
   );
 }
+// Compute a short fingerprint from an spki base64 public key
+async function fingerprintFromPub(b64) {
+  try {
+    const raw = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const hash = await crypto.subtle.digest("SHA-256", raw);
+    const hex = Array.from(new Uint8Array(hash))
+      .slice(0, 8)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .toUpperCase();
+    return hex.match(/.{1,4}/g).join(":");
+  } catch (_) {
+    return "????:????";
+  }
+}
 async function encryptChunk(key, data) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const enc = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
@@ -315,6 +330,20 @@ export default function App() {
   const [stats, setStats] = useState({ sent: 0, speed: "—", total: "0" });
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [connModal, setConnModal] = useState(null); // { trigger, remotePub, remoteFp, localFp, dc }
+
+  // Prevent background interaction/scroll when modal is open
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    if (connModal) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = prev;
+    }
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [connModal]);
 
   const pcRef = useRef(null); // RTCPeerConnection
   const dcRef = useRef(null); // RTCDataChannel
@@ -398,7 +427,7 @@ export default function App() {
       // ── CALLER: create data channel, make offer ──
       const dc = pc.createDataChannel("dropvault", { ordered: true });
       dcRef.current = dc;
-      setupDataChannel(dc);
+      setupDataChannel(dc, remoteId, true);
 
       await createOffer(pc, remoteId, myIdRef.current);
       addLog("offer sent, waiting for answer...", "info");
@@ -422,7 +451,7 @@ export default function App() {
       // ── CALLEE: set remote offer, create answer ──
       pc.ondatachannel = ({ channel }) => {
         dcRef.current = channel;
-        setupDataChannel(channel);
+        setupDataChannel(channel, remoteId, false);
       };
 
       await pc.setRemoteDescription(new RTCSessionDescription(incomingOffer));
@@ -440,54 +469,59 @@ export default function App() {
   }
 
   // ── Setup data channel events + key exchange ──────────────────────────────
-  function setupDataChannel(dc) {
+  function setupDataChannel(dc, remoteId, isCaller) {
     dc.binaryType = "arraybuffer";
     let keyPairPromise = genKeyPair();
 
+    dc._remoteId = remoteId;
+    dc._isCaller = !!isCaller;
+
     dc.onopen = async () => {
-      addLog("data channel open — starting key exchange", "info");
+      addLog("data channel open — sending connect request", "info");
       setConnStatus("connecting");
-      setConnLabel("exchanging keys...");
+      setConnLabel("awaiting approval...");
       const kp = await keyPairPromise;
       const pub = await exportPub(kp.publicKey);
-      dc.send(JSON.stringify({ type: "key_exchange", pub }));
-      // Store keypair for when we receive their key
       dc._myKeyPair = kp;
+      if (dc._isCaller) {
+        dc.send(JSON.stringify({ type: "connect_request", pub }));
+        addLog("connect request sent — waiting for remote approval", "info");
+      }
     };
 
     dc.onmessage = async ({ data }) => {
       if (typeof data === "string") {
         const msg = JSON.parse(data);
 
-        // ECDH key exchange
-        if (msg.type === "key_exchange") {
-          const kp = await (dc._myKeyPair || genKeyPair());
-          const remotePubKey = await importPub(msg.pub);
-          const sk = await deriveSharedKey(kp.privateKey, remotePubKey);
-          sharedKeyRef.current = sk;
-          setKeyReady(true);
-          setConnStatus("online");
-          setConnLabel("connected · AES-256-GCM ready");
-          addLog("session key established — ready to transfer", "ok");
-          // Echo our key if we haven't sent yet
-          if (!dc._sentKey) {
-            dc._sentKey = true;
-            const pub = await exportPub(kp.publicKey);
-            dc.send(JSON.stringify({ type: "key_ack", pub }));
-          }
+        // Handshake messages
+        if (msg.type === "connect_request") {
+          dc._pendingRemotePub = msg.pub;
+          const kp = await (dc._myKeyPair || keyPairPromise);
+          const localPub = await exportPub(kp.publicKey);
+          const remoteFp = await fingerprintFromPub(msg.pub);
+          const localFp = await fingerprintFromPub(localPub);
+          setConnModal({ trigger: "request", remotePub: msg.pub, remoteFp, localFp, dc });
+          addLog("incoming connect request — verification required", "warn");
         }
 
-        if (msg.type === "key_ack") {
-          if (!sharedKeyRef.current) {
-            const kp = dc._myKeyPair;
-            const remotePubKey = await importPub(msg.pub);
-            const sk = await deriveSharedKey(kp.privateKey, remotePubKey);
-            sharedKeyRef.current = sk;
-            setKeyReady(true);
-            setConnStatus("online");
-            setConnLabel("connected · AES-256-GCM ready");
-            addLog("session key established — ready to transfer", "ok");
-          }
+        if (msg.type === "connect_accept") {
+          dc._pendingRemotePub = msg.pub;
+          const kp = await (dc._myKeyPair || keyPairPromise);
+          const localPub = await exportPub(kp.publicKey);
+          const remoteFp = await fingerprintFromPub(msg.pub);
+          const localFp = await fingerprintFromPub(localPub);
+          setConnModal({ trigger: "accept", remotePub: msg.pub, remoteFp, localFp, dc });
+          addLog("remote accepted — verify fingerprint to complete", "info");
+        }
+
+        if (msg.type === "connect_reject") {
+          addLog("remote rejected the connection", "warn");
+          setConnStatus("error");
+          setConnLabel("connection rejected");
+          try {
+            if (pcRef.current) pcRef.current.close();
+          } catch (_) {}
+          return;
         }
 
         // Incoming file metadata
@@ -584,6 +618,49 @@ export default function App() {
     };
 
     dc.onerror = (e) => addLog("data channel error: " + e, "err");
+  }
+
+  // Modal handlers: accept or reject incoming/accepted connection
+  async function handleConnAccept() {
+    if (!connModal) return;
+    const { dc, remotePub, trigger } = connModal;
+    try {
+      const kp = dc._myKeyPair || (await genKeyPair());
+      // derive shared key
+      const remotePubKey = await importPub(remotePub);
+      const sk = await deriveSharedKey(kp.privateKey, remotePubKey);
+      sharedKeyRef.current = sk;
+      setKeyReady(true);
+      setConnStatus("online");
+      setConnLabel("connected · AES-256-GCM ready");
+      addLog("session key established — ready to transfer", "ok");
+
+      // If we accepted a request (we're the callee), send connect_accept carrying our pub
+      if (trigger === "request") {
+        const myPub = await exportPub(kp.publicKey);
+        try {
+          dc.send(JSON.stringify({ type: "connect_accept", pub: myPub }));
+        } catch (_) {}
+      }
+    } catch (e) {
+      addLog("error establishing session key", "err");
+    }
+    setConnModal(null);
+  }
+
+  function handleConnReject() {
+    if (!connModal) return;
+    const { dc } = connModal;
+    try {
+      if (dc) dc.send(JSON.stringify({ type: "connect_reject" }));
+    } catch (_) {}
+    setConnModal(null);
+    setConnStatus("error");
+    setConnLabel("connection rejected");
+    try {
+      if (pcRef.current) pcRef.current.close();
+    } catch (_) {}
+    addLog("connection rejected by user", "warn");
   }
 
   // ── Initiate outgoing connection ──────────────────────────────────────────
@@ -956,6 +1033,36 @@ export default function App() {
 
       {/* LOG TAB */}
       {tab === "log" && <LogView logs={logs} onClear={() => setLogs([])} />}
+
+      {/* Connection verification modal */}
+      {connModal && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>Incoming connection</h3>
+            <p>
+              Verify the short fingerprint with your remote peer before accepting.
+            </p>
+            <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+              <div style={{ flex: 1 }}>
+                <div className="card-label">their fingerprint</div>
+                <div style={{ fontFamily: "monospace", marginTop: 6 }}>{connModal.remoteFp}</div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div className="card-label">your fingerprint</div>
+                <div style={{ fontFamily: "monospace", marginTop: 6 }}>{connModal.localFp}</div>
+              </div>
+            </div>
+            <div style={{ marginTop: 12, textAlign: "right" }}>
+              <button className="btn-danger" onClick={handleConnReject} style={{ marginRight: 8 }}>
+                reject
+              </button>
+              <button className="btn-primary" onClick={handleConnAccept}>
+                accept
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <p className="footer">
         only sdp/ice signaling passes through firebase · no file data ever
