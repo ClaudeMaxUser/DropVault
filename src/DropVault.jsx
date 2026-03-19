@@ -276,7 +276,7 @@ function FileItem({ file, id, prog, onRemove }) {
 }
 
 // ── IncomingItem component ────────────────────────────────────────────────────
-function IncomingItem({ fi }) {
+function IncomingItem({ fi, onSave }) {
   return (
     <div className="file-item">
       <div className="file-item-header">
@@ -311,8 +311,20 @@ function IncomingItem({ fi }) {
       <div className="progress-label">
         <span>{fi.pct}%</span>
         <span style={{ color: fi.done ? "#34d399" : "#fbbf24" }}>
-          {fi.done ? "saved ✓" : "receiving..."}
+          {fi.done ? (fi.saved ? "saved ✓" : "ready to save") : "receiving..."}
         </span>
+      </div>
+      <div style={{ marginTop: 8, textAlign: "right" }}>
+        {fi.done && !fi.saved && fi.url && (
+          <button className="btn-primary" onClick={onSave}>
+            save
+          </button>
+        )}
+        {fi.saved && (
+          <button className="btn" disabled>
+            saved ✓
+          </button>
+        )}
       </div>
     </div>
   );
@@ -354,7 +366,7 @@ export default function App() {
     { t: nowTime(), m: "initializing...", k: "info" },
   ]);
   const [dragging, setDragging] = useState(false);
-  const [stats, setStats] = useState({ sent: 0, speed: "—", total: "0" });
+  const [stats, setStats] = useState({ sent: 0, speed: "—", total: "0 MB" });
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
   const [connModal, setConnModal] = useState(null); // { trigger, remotePub, remoteFp, localFp, dc }
@@ -443,7 +455,11 @@ export default function App() {
         // Clean up signaling data — no longer needed
         cleanupRoom(isCaller ? remoteId : remoteId); // both clean remoteId now
       }
-      if (state === "failed" || state === "disconnected" || state === "closed") {
+      if (
+        state === "failed" ||
+        state === "disconnected" ||
+        state === "closed"
+      ) {
         setConnStatus("error");
         setConnLabel("connection lost");
         setKeyReady(false);
@@ -544,7 +560,13 @@ export default function App() {
           const localPub = await exportPub(kp.publicKey);
           const remoteFp = await fingerprintFromPub(msg.pub);
           const localFp = await fingerprintFromPub(localPub);
-          setConnModal({ trigger: "request", remotePub: msg.pub, remoteFp, localFp, dc });
+          setConnModal({
+            trigger: "request",
+            remotePub: msg.pub,
+            remoteFp,
+            localFp,
+            dc,
+          });
           addLog("incoming connect request — verification required", "warn");
         }
 
@@ -554,7 +576,13 @@ export default function App() {
           const localPub = await exportPub(kp.publicKey);
           const remoteFp = await fingerprintFromPub(msg.pub);
           const localFp = await fingerprintFromPub(localPub);
-          setConnModal({ trigger: "accept", remotePub: msg.pub, remoteFp, localFp, dc });
+          setConnModal({
+            trigger: "accept",
+            remotePub: msg.pub,
+            remoteFp,
+            localFp,
+            dc,
+          });
           addLog("remote accepted — verify fingerprint to complete", "info");
         }
 
@@ -563,7 +591,10 @@ export default function App() {
           setConnStatus("error");
           setConnLabel("connection rejected");
           try {
-            if (pcRef.current) try { pcRef.current.close(); } catch (_) {}
+            if (pcRef.current)
+              try {
+                pcRef.current.close();
+              } catch (_) {}
             pcRef.current = null;
             dcRef.current = null;
             sharedKeyRef.current = null;
@@ -590,6 +621,8 @@ export default function App() {
               size: msg.size,
               pct: 0,
               done: false,
+              url: null,
+              saved: false,
             },
           }));
           dc.send(
@@ -641,17 +674,22 @@ export default function App() {
             type: fi.mimeType || "application/octet-stream",
           });
           const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = fi.name;
-          a.click();
-          URL.revokeObjectURL(url);
+          // Store URL and mark as received; user can click Save to download
           setIncoming((prev) => ({
             ...prev,
-            [fileId]: { ...prev[fileId], pct: 100, done: true },
+            [fileId]: {
+              ...prev[fileId],
+              pct: 100,
+              done: true,
+              url,
+              saved: false,
+            },
           }));
           clearResume("r_" + fileId);
-          addLog("file saved: " + fi.name, "ok");
+          addLog(
+            "file received: " + fi.name + " · click save to download",
+            "ok",
+          );
         }
       }
     };
@@ -666,7 +704,8 @@ export default function App() {
       addLog("data channel closed", "warn");
     };
 
-    dc.onerror = (e) => addLog("data channel error: " + formatRtcError(e), "err");
+    dc.onerror = (e) =>
+      addLog("data channel error: " + formatRtcError(e), "err");
   }
 
   // Modal handlers: accept or reject incoming/accepted connection
@@ -707,7 +746,10 @@ export default function App() {
     setConnStatus("error");
     setConnLabel("connection rejected");
     try {
-      if (pcRef.current) try { pcRef.current.close(); } catch (_) {}
+      if (pcRef.current)
+        try {
+          pcRef.current.close();
+        } catch (_) {}
       pcRef.current = null;
       dcRef.current = null;
       sharedKeyRef.current = null;
@@ -857,7 +899,7 @@ export default function App() {
       setStats({
         sent: filesSent,
         speed: "—",
-        total: (bytesSent / 1048576).toFixed(1),
+        total: (bytesSent / 1048576).toFixed(1) + " MB",
       });
       addLog("done: " + file.name, "ok");
     }
@@ -866,12 +908,62 @@ export default function App() {
     addLog("all files transferred", "ok");
   }
 
+  // Save received file (user-triggered)
+  function handleSave(fileId) {
+    const item = incoming[fileId];
+    if (!item || !item.url) return;
+    try {
+      const a = document.createElement("a");
+      a.href = item.url;
+      a.download = item.name;
+      a.click();
+      URL.revokeObjectURL(item.url);
+      setIncoming((prev) => ({
+        ...prev,
+        [fileId]: { ...prev[fileId], saved: true, url: null },
+      }));
+      addLog("file saved: " + item.name, "ok");
+    } catch (e) {
+      addLog("error saving file: " + item.name, "err");
+    }
+  }
+
+  // Save all received files that are ready
+  function handleSaveAll() {
+    Object.entries(incoming).forEach(([fileId, item]) => {
+      if (item && item.done && item.url && !item.saved) {
+        try {
+          const a = document.createElement("a");
+          a.href = item.url;
+          a.download = item.name;
+          // append/click/remove to ensure consistent behavior
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(item.url);
+          setIncoming((prev) => ({
+            ...prev,
+            [fileId]: { ...prev[fileId], saved: true, url: null },
+          }));
+          addLog("file saved: " + item.name, "ok");
+        } catch (e) {
+          addLog("error saving file: " + item.name, "err");
+        }
+      }
+    });
+  }
+
   function copyId() {
     navigator.clipboard.writeText(myId);
     setCopied(true);
     addLog("peer id copied", "ok");
     setTimeout(() => setCopied(false), 1500);
   }
+
+  // number of received files ready to be saved
+  const savableCount = Object.values(incoming).filter(
+    (fi) => fi.done && fi.url && !fi.saved,
+  ).length;
 
   const dotColors = {
     online: "#34d399",
@@ -904,9 +996,9 @@ export default function App() {
         </div>
         <div>
           <h1>DropVault</h1>
-          <p className="subtitle">
+          {/* <p className="subtitle">
             P2P · AES-256-GCM · Firebase signaling · No file storage
-          </p>
+          </p> */}
         </div>
         <div className="status-bar">
           <div
@@ -940,12 +1032,6 @@ export default function App() {
             color: "#a99fff",
             bg: "rgba(124,111,255,0.08)",
           },
-          {
-            label: "Firebase signaling",
-            color: "#fbbf24",
-            bg: "rgba(251,191,36,0.08)",
-          },
-          { label: "resumable", color: "#556", bg: "transparent" },
         ].map((b) => (
           <span
             key={b.label}
@@ -1114,7 +1200,22 @@ export default function App() {
           </div>
 
           <div className="card">
-            <div className="card-label">incoming transfers</div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div className="card-label">incoming transfers</div>
+              {savableCount > 0 && (
+                <div>
+                  <button className="btn-primary" onClick={handleSaveAll}>
+                    save all
+                  </button>
+                </div>
+              )}
+            </div>
             {Object.keys(incoming).length === 0 ? (
               <div className="empty-state">
                 {keyReady
@@ -1125,7 +1226,7 @@ export default function App() {
               </div>
             ) : (
               Object.entries(incoming).map(([id, fi]) => (
-                <IncomingItem key={id} fi={fi} />
+                <IncomingItem key={id} fi={fi} onSave={() => handleSave(id)} />
               ))
             )}
           </div>
@@ -1139,24 +1240,36 @@ export default function App() {
       {connModal && (
         <div className="modal-overlay">
           <div className="modal">
-                  <h3>{connModal.trigger === "outgoing" ? "Outgoing connection" : "Incoming connection"}</h3>
-                  <p>
-                    {connModal.trigger === "outgoing"
-                      ? "Share the following fingerprint with your remote peer so they can verify it. Waiting for their acceptance."
-                      : "Verify the short fingerprint with your remote peer before accepting."}
-                  </p>
+            <h3>
+              {connModal.trigger === "outgoing"
+                ? "Outgoing connection"
+                : "Incoming connection"}
+            </h3>
+            <p>
+              {connModal.trigger === "outgoing"
+                ? "Share the following fingerprint with your remote peer so they can verify it. Waiting for their acceptance."
+                : "Verify the short fingerprint with your remote peer before accepting."}
+            </p>
             <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
               <div style={{ flex: 1 }}>
                 <div className="card-label">their fingerprint</div>
-                <div style={{ fontFamily: "monospace", marginTop: 6 }}>{connModal.remoteFp || "—"}</div>
+                <div style={{ fontFamily: "monospace", marginTop: 6 }}>
+                  {connModal.remoteFp || "—"}
+                </div>
               </div>
               <div style={{ flex: 1 }}>
                 <div className="card-label">your fingerprint</div>
-                <div style={{ fontFamily: "monospace", marginTop: 6 }}>{connModal.localFp || "—"}</div>
+                <div style={{ fontFamily: "monospace", marginTop: 6 }}>
+                  {connModal.localFp || "—"}
+                </div>
               </div>
             </div>
             <div style={{ marginTop: 12, textAlign: "right" }}>
-              <button className="btn-danger" onClick={handleConnReject} style={{ marginRight: 8 }}>
+              <button
+                className="btn-danger"
+                onClick={handleConnReject}
+                style={{ marginRight: 8 }}
+              >
                 reject
               </button>
               <button className="btn-primary" onClick={handleConnAccept}>
@@ -1171,9 +1284,16 @@ export default function App() {
         <div className="modal-overlay">
           <div className="modal">
             <h3>Disconnect</h3>
-            <p>Are you sure you want to disconnect? This will stop any active transfer.</p>
+            <p>
+              Are you sure you want to disconnect? This will stop any active
+              transfer.
+            </p>
             <div style={{ marginTop: 12, textAlign: "right" }}>
-              <button className="btn" onClick={handleDisconnectCancel} style={{ marginRight: 8 }}>
+              <button
+                className="btn"
+                onClick={handleDisconnectCancel}
+                style={{ marginRight: 8 }}
+              >
                 cancel
               </button>
               <button className="btn-danger" onClick={handleDisconnectConfirm}>
@@ -1185,8 +1305,8 @@ export default function App() {
       )}
 
       <p className="footer">
-        only sdp/ice signaling passes through server · no data ever
-        leaves your browser unencrypted
+        only sdp/ice signaling passes through server · no data ever leaves your
+        browser unencrypted
       </p>
     </div>
   );
