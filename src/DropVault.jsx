@@ -372,6 +372,30 @@ export default function App() {
   const [connModal, setConnModal] = useState(null); // { trigger, remotePub, remoteFp, localFp, dc }
   const [disconnectModal, setDisconnectModal] = useState(false);
 
+  // Theme (dark / light) persisted in localStorage
+  const [theme, setTheme] = useState(() => {
+    try {
+      const stored = localStorage.getItem("dv_theme");
+      if (stored) return stored;
+      return window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+        ? "light"
+        : "dark";
+    } catch (_) {
+      return "dark";
+    }
+  });
+
+  useEffect(() => {
+    try {
+      document.documentElement.setAttribute("data-theme", theme);
+      localStorage.setItem("dv_theme", theme);
+    } catch (_) {}
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme((t) => (t === "dark" ? "light" : "dark"));
+  }
+
   // Prevent background interaction/scroll when modal is open
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -1016,6 +1040,16 @@ export default function App() {
             }}
           />
           <span>{connLabel}</span>
+        </div>
+        <div style={{ marginLeft: 12 }}>
+          <button
+            className="theme-toggle"
+            onClick={toggleTheme}
+            aria-label="Toggle theme"
+            title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+          >
+            {theme === "dark" ? "☀️" : "🌙"}
+          </button>
         </div>
       </header>
 
