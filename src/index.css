@@ -1,27 +1,12 @@
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Syne:wght@400;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap");
 
+/* ─── Base resets (unchanged) ─────────────────────────────────────────────── */
 :root {
-  --text: #ffffff;
-  --text-h: #ffffff;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
-
-  --sans: system-ui, "Segoe UI", Roboto, sans-serif;
-  --heading: system-ui, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
-
   font: 18px/145% var(--sans);
   font-weight: 500;
   letter-spacing: 0.18px;
   color-scheme: light dark;
-  color: var(--text);
+  color: var(--txt);
   background: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -33,19 +18,111 @@
   }
 }
 
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--sans);
+  font-weight: 500;
+}
+
+/* ─── DARK MODE — Default ─────────────────────────────────────────────────── */
+/*
+    Palette concept: "Deep Ocean Terminal"
+    - Near-black with a cold blue-gray tint (not warm black)
+    - Accent: sharp electric cyan (#00d4c8) — data stream, network pulse
+    - Secondary accent: muted teal (#5eead4) — softer highlights
+    - Status: green stays green, red stays red, amber stays amber
+    - Borders: faint cyan glow, barely-there
+*/
+:root {
+  --bg: #080c10; /* very dark cool-black, hint of midnight blue          */
+  --s1: #0d1117; /* card background — classic terminal dark               */
+  --s2: #111820; /* inset / nested backgrounds                            */
+  --s3: #17212e; /* deepest inset (inputs, code blocks)                   */
+
+  --acc: #00d4c8; /* electric cyan — primary actions, active states        */
+  --acc2: #5eead4; /* soft teal — labels, secondary highlights              */
+
+  --grn: #22d3a0; /* success / connected                                   */
+  --red: #f87171; /* error / danger                                        */
+  --amb: #fbbf24; /* warning / amber                                       */
+
+  --txt: #e2f0f0; /* near-white with a cool teal tint                      */
+  --text: #e2f0f0;
+  --text-h: #ffffff;
+  --mut: #3d5a6a; /* muted text — dark blue-gray                           */
+
+  --bdr: rgba(0, 212, 200, 0.1); /* hairline borders — faint cyan glow    */
+  --bdr2: rgba(0, 212, 200, 0.28); /* focused borders                       */
+
+  --border: rgba(0, 212, 200, 0.1);
+  --code-bg: #111820;
+  --accent: #00d4c8;
+  --accent-bg: rgba(0, 212, 200, 0.1);
+  --accent-border: rgba(0, 212, 200, 0.4);
+  --social-bg: rgba(17, 24, 32, 0.6);
+  --shadow:
+    rgba(0, 0, 0, 0.5) 0 10px 15px -3px, rgba(0, 212, 200, 0.04) 0 0 0 1px;
+
+  --mono: "JetBrains Mono", monospace;
+  --sans:
+    "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --heading: "Syne", system-ui, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ─── LIGHT MODE — [data-theme="light"] ──────────────────────────────────── */
+/*
+    Palette concept: "Frosted Dataroom"
+    - White/very light gray base — like a macOS sheet or Figma canvas
+    - Cyan accent darkened to #0891b2 (sky-700) — readable on white
+    - Secondary: #0e7490 (deeper teal) for labels & muted text
+    - Borders: subtle slate-gray, no glow
+    - Status colors adjusted for legibility on light
+*/
+:root[data-theme="light"] {
+  --bg: #f0f7f9; /* cool off-white with a breath of teal                 */
+  --s1: #ffffff; /* card surface — pure white                             */
+  --s2: #eaf4f6; /* inset backgrounds — faint aqua wash                  */
+  --s3: #ddeef2; /* deepest inset — slightly more saturated               */
+
+  --acc: #0891b2; /* dark cyan — strong, readable on white                 */
+  --acc2: #0e7490; /* deeper teal — secondary labels                        */
+
+  --grn: #059669; /* success                                                */
+  --red: #dc2626; /* error                                                  */
+  --amb: #d97706; /* warning                                                */
+
+  --txt: #0d2430; /* very dark teal-navy for body text                     */
+  --text: #0d2430;
+  --text-h: #071920;
+  --mut: #527d8e; /* muted — medium teal-gray                              */
+
+  --bdr: #cde6ec; /* soft teal-gray hairlines                              */
+  --bdr2: rgba(8, 145, 178, 0.25);
+
+  --border: #cde6ec;
+  --code-bg: #eaf4f6;
+  --accent: #0891b2;
+  --accent-bg: rgba(8, 145, 178, 0.08);
+  --accent-border: rgba(8, 145, 178, 0.3);
+  --social-bg: rgba(234, 244, 246, 0.7);
+  --shadow:
+    rgba(13, 36, 48, 0.08) 0 10px 15px -3px,
+    rgba(13, 36, 48, 0.04) 0 4px 6px -2px;
+}
+
+/* ─── Ensure light-mode invert doesn't apply to icons ────────────────────── */
+:root[data-theme="light"] #social .button-icon {
+  filter: none;
+}
+
+/* ─── System dark preference (when no data-theme attr is set) ─────────────── */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --text: #ffffff;
-    --text-h: #ffffff;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+  :root:not([data-theme="light"]) {
+    /* Already set as default above — this block is a safety net */
+    color-scheme: dark;
   }
 
   #social .button-icon {
@@ -53,29 +130,13 @@
   }
 }
 
-body {
-  margin: 0;
-}
-
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-}
-
+/* ─── Typography ──────────────────────────────────────────────────────────── */
 h1,
 h2 {
   font-family: var(--heading);
   font-weight: 500;
   color: var(--text-h);
 }
-
 h1 {
   font-size: 56px;
   letter-spacing: -1.68px;
@@ -105,7 +166,6 @@ code,
   border-radius: 4px;
   color: var(--text-h);
 }
-
 code {
   font-size: 15px;
   line-height: 135%;
@@ -113,36 +173,25 @@ code {
   background: var(--code-bg);
 }
 
-:root {
-  --bg: #09090f;
-  --s1: #111118;
-  --s2: #17171f;
-  --s3: #1e1e28;
-  --acc: #7c6fff;
-  --acc2: #a99fff;
-  --grn: #34d399;
-  --red: #f87171;
-  --amb: #fbbf24;
-  --txt: #ffffff;
-  --mut: #556;
-  --bdr: rgba(124, 111, 255, 0.15);
-  --bdr2: rgba(124, 111, 255, 0.32);
-  --mono: "JetBrains Mono", monospace;
-  --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --heading: "Syne", system-ui, "Segoe UI", Roboto, sans-serif;
-}
-
-body {
-  background: var(--bg);
-  color: var(--txt);
-  font-family: var(--sans);
-  font-weight: 500;
+/* ─── Layout ──────────────────────────────────────────────────────────────── */
+#root {
+  width: 1126px;
+  max-width: 100%;
+  margin: 0 auto;
+  text-align: center;
+  border-inline: 1px solid var(--border);
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
 }
 .app {
   max-width: 740px;
   margin: 0 auto;
   padding: 24px 16px 48px;
 }
+
+/* ─── Header ──────────────────────────────────────────────────────────────── */
 .header {
   display: flex;
   align-items: center;
@@ -160,6 +209,19 @@ body {
   align-items: center;
   justify-content: center;
 }
+.logo svg path,
+.logo svg circle,
+.logo svg rect {
+  fill: #080c10 !important; /* dark icon inside bright cyan logo */
+  stroke: #080c10 !important;
+}
+:root[data-theme="light"] .logo svg path,
+:root[data-theme="light"] .logo svg circle,
+:root[data-theme="light"] .logo svg rect {
+  fill: #ffffff !important;
+  stroke: #ffffff !important;
+}
+
 h1 {
   font-family: var(--sans);
   font-size: 17px;
@@ -184,6 +246,8 @@ h1 {
   height: 7px;
   border-radius: 50%;
 }
+
+/* ─── Badges ──────────────────────────────────────────────────────────────── */
 .badges {
   display: flex;
   gap: 6px;
@@ -198,6 +262,8 @@ h1 {
   border-radius: 4px;
   border: 0.5px solid;
 }
+
+/* ─── Tabs ────────────────────────────────────────────────────────────────── */
 .tabs {
   display: flex;
   gap: 3px;
@@ -217,12 +283,20 @@ h1 {
   font-size: 11px;
   color: var(--mut);
   cursor: pointer;
+  transition:
+    color 0.15s,
+    background 0.15s;
 }
 .tab.active {
   background: var(--s3);
   border: 0.5px solid var(--bdr2);
   color: var(--acc2);
 }
+.tab:not(.active):hover {
+  color: var(--acc2);
+}
+
+/* ─── Cards ───────────────────────────────────────────────────────────────── */
 .card {
   background: var(--s1);
   border: 0.5px solid var(--bdr);
@@ -237,6 +311,8 @@ h1 {
   color: var(--mut);
   margin-bottom: 10px;
 }
+
+/* ─── PID / Peer ID box ───────────────────────────────────────────────────── */
 .pid-box {
   display: flex;
   align-items: center;
@@ -253,6 +329,8 @@ h1 {
   color: var(--acc2);
   word-break: break-all;
 }
+
+/* ─── Inputs & Buttons ────────────────────────────────────────────────────── */
 .row {
   display: flex;
   gap: 8px;
@@ -268,10 +346,19 @@ input[type="text"] {
   font-size: 12px;
   padding: 9px 12px;
   outline: none;
+  transition: border-color 0.15s;
 }
 input[type="text"]:focus {
   border-color: var(--acc);
+  box-shadow: 0 0 0 2px rgba(0, 212, 200, 0.12);
 }
+:root[data-theme="light"] input[type="text"]:focus {
+  box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.12);
+}
+input[type="text"]::placeholder {
+  color: var(--mut);
+}
+
 .btn,
 .btn-primary,
 .btn-danger {
@@ -281,19 +368,29 @@ input[type="text"]:focus {
   border-radius: 7px;
   cursor: pointer;
   white-space: nowrap;
+  transition:
+    opacity 0.15s,
+    background 0.15s;
 }
 .btn {
   background: none;
   border: 0.5px solid var(--bdr2);
   color: var(--acc2);
 }
+.btn:hover {
+  background: var(--accent-bg);
+}
 .btn-primary {
   background: var(--acc);
   border: none;
-  color: #fff;
+  color: #080c10; /* dark text on bright cyan — always legible */
+  font-weight: 700;
+}
+.btn-primary:hover {
+  opacity: 0.88;
 }
 .btn-primary:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 .btn-danger {
@@ -301,11 +398,16 @@ input[type="text"]:focus {
   border: 0.5px solid var(--red);
   color: var(--red);
 }
+.btn-danger:hover {
+  background: rgba(248, 113, 113, 0.08);
+}
 .conn-note {
   font-size: 11px;
   color: var(--grn);
   margin-top: 8px;
 }
+
+/* ─── Drop Zone ───────────────────────────────────────────────────────────── */
 .drop-zone {
   border: 1.5px dashed var(--bdr2);
   border-radius: 10px;
@@ -313,20 +415,29 @@ input[type="text"]:focus {
   text-align: center;
   cursor: pointer;
   background: var(--s2);
+  transition:
+    border-color 0.15s,
+    background 0.15s;
 }
 .drop-zone.dragging {
   border-color: var(--acc);
-  background: rgba(124, 111, 255, 0.08);
+  background: rgba(0, 212, 200, 0.06);
+}
+:root[data-theme="light"] .drop-zone.dragging {
+  background: rgba(8, 145, 178, 0.06);
 }
 .drop-icon {
   width: 36px;
   height: 36px;
-  background: rgba(124, 111, 255, 0.15);
+  background: rgba(0, 212, 200, 0.12);
   border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
   margin: 0 auto 10px;
+}
+:root[data-theme="light"] .drop-icon {
+  background: rgba(8, 145, 178, 0.1);
 }
 .drop-text {
   font-size: 12px;
@@ -340,6 +451,8 @@ input[type="text"]:focus {
   color: var(--mut);
   margin-top: 3px;
 }
+
+/* ─── File List ───────────────────────────────────────────────────────────── */
 .file-list {
   margin-top: 12px;
 }
@@ -359,12 +472,15 @@ input[type="text"]:focus {
 .file-icon {
   width: 26px;
   height: 26px;
-  background: rgba(124, 111, 255, 0.12);
+  background: rgba(0, 212, 200, 0.1);
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+:root[data-theme="light"] .file-icon {
+  background: rgba(8, 145, 178, 0.1);
 }
 .file-name {
   flex: 1;
@@ -385,7 +501,13 @@ input[type="text"]:focus {
   cursor: pointer;
   font-size: 16px;
   padding: 0 3px;
+  transition: color 0.15s;
 }
+.file-remove:hover {
+  color: var(--red);
+}
+
+/* ─── Progress ────────────────────────────────────────────────────────────── */
 .progress-bar {
   height: 3px;
   background: var(--s3);
@@ -396,6 +518,8 @@ input[type="text"]:focus {
   height: 100%;
   border-radius: 2px;
   transition: width 0.3s;
+  /* Use cyan gradient for transfer feel */
+  background: linear-gradient(90deg, var(--acc), var(--acc2));
 }
 .progress-label {
   display: flex;
@@ -404,12 +528,16 @@ input[type="text"]:focus {
   color: var(--mut);
   margin-top: 3px;
 }
+
+/* ─── Actions ─────────────────────────────────────────────────────────────── */
 .actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 12px;
 }
+
+/* ─── Stats Grid ──────────────────────────────────────────────────────────── */
 .stats-grid {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -433,6 +561,8 @@ input[type="text"]:focus {
   color: var(--mut);
   margin-top: 2px;
 }
+
+/* ─── Log ─────────────────────────────────────────────────────────────────── */
 .log {
   background: var(--s2);
   border: 0.5px solid var(--bdr);
@@ -448,15 +578,21 @@ input[type="text"]:focus {
   gap: 8px;
 }
 .log-time {
-  color: #333355;
+  /* Soft teal-gray for timestamps — readable but not distracting */
+  color: var(--mut);
+  opacity: 0.6;
   flex-shrink: 0;
 }
+
+/* ─── Empty State ─────────────────────────────────────────────────────────── */
 .empty-state {
   text-align: center;
   padding: 24px;
   color: var(--mut);
   font-size: 12px;
 }
+
+/* ─── Footer ──────────────────────────────────────────────────────────────── */
 .footer {
   margin-top: 16px;
   font-size: 10px;
@@ -465,51 +601,29 @@ input[type="text"]:focus {
   line-height: 1.6;
 }
 
-/* Modal overlay — blocks interaction with background */
+/* ─── Modal ───────────────────────────────────────────────────────────────── */
 .modal-overlay {
   position: fixed;
-  inset: 0; /* top:0; right:0; bottom:0; left:0; */
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(2, 6, 23, 0.6);
+  background: rgba(8, 12, 16, 0.72);
   z-index: 1000;
   -webkit-backdrop-filter: blur(4px);
   backdrop-filter: blur(4px);
 }
-
 .modal {
   width: min(560px, calc(100% - 48px));
   background: var(--s1);
-  border: 0.5px solid var(--bdr);
+  border: 0.5px solid var(--bdr2);
   border-radius: 12px;
   padding: 18px;
   box-shadow: var(--shadow);
   z-index: 1001;
 }
 
-/* Light theme override when user chooses light */
-:root[data-theme="light"] {
-  --bg: #ffffff;
-  --s1: #ffffff;
-  --s2: #f7f8fb;
-  --s3: #f1f3f7;
-  --acc: #7c6fff;
-  --acc2: #6b4bff;
-  --grn: #059669;
-  --red: #ef4444;
-  --amb: #f59e0b;
-  --txt: #0b1220;
-  --text: #0b1220;
-  --text-h: #0b1220;
-  --mut: #374151;
-  --bdr: #e6e7ea;
-  --bdr2: rgba(124, 111, 255, 0.12);
-  --code-bg: #f6f6f8;
-  --shadow: rgba(2, 6, 23, 0.06) 0 10px 15px -3px, rgba(2, 6, 23, 0.04) 0 4px 6px -2px;
-}
-
-/* Theme toggle button */
+/* ─── Theme Toggle ────────────────────────────────────────────────────────── */
 .theme-toggle {
   background: var(--s2);
   border: 0.5px solid var(--bdr);
@@ -519,16 +633,12 @@ input[type="text"]:focus {
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
+  transition: border-color 0.15s;
+}
+.theme-toggle:hover {
+  border-color: var(--acc);
 }
 .theme-toggle:focus {
   outline: 2px solid var(--acc);
   outline-offset: 2px;
-}
-
-/* Ensure logo SVG uses theme-aware colors (overrides inline fills) */
-.logo svg path,
-.logo svg circle,
-.logo svg rect {
-  fill: var(--text, var(--txt)) !important;
-  stroke: var(--text, var(--txt)) !important;
 }

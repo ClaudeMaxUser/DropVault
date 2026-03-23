@@ -1164,10 +1164,10 @@ export default function App() {
               />
               <div className="drop-icon">
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <path d="M9 2L13 6H10.5V12H7.5V6H5L9 2Z" fill="#7c6fff" />
+                  <path d="M9 2L13 6H10.5V12H7.5V6H5L9 2Z" fill="#00d4c8" />
                   <path
                     d="M2 14V16H16V14"
-                    stroke="#7c6fff"
+                    stroke="#00d4c8"
                     strokeWidth="1.5"
                     strokeLinecap="round"
                   />
