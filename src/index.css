@@ -186,10 +186,10 @@ code {
   box-sizing: border-box;
 }
 .app {
-  max-width: 740px;
-  margin: 0 auto;
+  /* max-width: 740px */
+  /* margin: 0 auto; */
   padding: 24px 16px 48px;
-}
+  }
 
 /* ─── Header ──────────────────────────────────────────────────────────────── */
 .header {
