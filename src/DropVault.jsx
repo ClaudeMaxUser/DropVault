@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { ref, set, onValue, push, remove, off } from "firebase/database";
+import { ref, set, onValue, push, remove, off, get } from "firebase/database";
 import { db } from "./firebase";
 
 // ── WebRTC ICE config ─────────────────────────────────────────────────────────
@@ -27,10 +27,12 @@ async function genKeyPair() {
     ["deriveKey"],
   );
 }
+
 async function exportPub(key) {
   const exported = await crypto.subtle.exportKey("spki", key);
   return btoa(String.fromCharCode(...new Uint8Array(exported)));
 }
+
 async function importPub(b64) {
   const raw = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   return crypto.subtle.importKey(
@@ -41,15 +43,58 @@ async function importPub(b64) {
     [],
   );
 }
+
 async function deriveSharedKey(privateKey, publicKey) {
-  return crypto.subtle.deriveKey(
-    { name: "ECDH", public: publicKey },
-    privateKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"],
-  );
+  // Prefer HKDF-based derivation for domain separation, but fall back
+  // to the direct deriveKey approach if HKDF isn't available or fails.
+  try {
+    // 1. Derive ECDH shared secret (raw bits)
+    const sharedSecret = await crypto.subtle.deriveBits(
+      { name: "ECDH", public: publicKey },
+      privateKey,
+      256
+    );
+
+    // 2. HKDF domain separation
+    const info = new TextEncoder().encode("DropVault-AES-Session");
+    const salt = new Uint8Array(32); // all-zero salt to avoid extra coordination
+
+    // Import the shared secret as an HKDF key
+    const hkdfKey = await crypto.subtle.importKey(
+      "raw",
+      sharedSecret,
+      { name: "HKDF" },
+      false,
+      ["deriveKey"],
+    );
+
+    // Derive the AES-GCM key using HKDF
+    return await crypto.subtle.deriveKey(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt,
+        info,
+      },
+      hkdfKey,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"],
+    );
+  } catch (e) {
+    // Fallback: older approach that derives AES-GCM key directly from ECDH
+    // This preserves compatibility if HKDF/importKey isn't supported.
+    console.warn("HKDF key derivation failed, falling back to direct deriveKey:", e);
+    return crypto.subtle.deriveKey(
+      { name: "ECDH", public: publicKey },
+      privateKey,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"],
+    );
+  }
 }
+
 // Compute a short fingerprint from an spki base64 public key
 async function fingerprintFromPub(b64) {
   try {
@@ -65,6 +110,7 @@ async function fingerprintFromPub(b64) {
     return "????:????";
   }
 }
+
 async function encryptChunk(key, data) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const enc = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
@@ -73,6 +119,7 @@ async function encryptChunk(key, data) {
   out.set(new Uint8Array(enc), 12);
   return out.buffer;
 }
+
 async function decryptChunk(key, data) {
   const iv = new Uint8Array(data.slice(0, 12));
   const enc = data.slice(12);
@@ -87,6 +134,7 @@ function saveResume(id, n, total) {
     localStorage.setItem(RESUME_KEY, JSON.stringify(s));
   } catch (_) {}
 }
+
 function getResume(id) {
   try {
     const s = JSON.parse(localStorage.getItem(RESUME_KEY) || "{}");
@@ -95,6 +143,7 @@ function getResume(id) {
     return null;
   }
 }
+
 function clearResume(id) {
   try {
     const s = JSON.parse(localStorage.getItem(RESUME_KEY) || "{}");
@@ -110,6 +159,7 @@ function formatBytes(b) {
   if (b < 1073741824) return (b / 1048576).toFixed(1) + " MB";
   return (b / 1073741824).toFixed(2) + " GB";
 }
+
 // Format RTC/WebRTC error events into a readable string for logs
 function formatRtcError(e) {
   try {
@@ -137,14 +187,17 @@ function formatRtcError(e) {
     return "RTC error";
   }
 }
+
 function formatSpeed(bps) {
   if (bps < 1024) return bps.toFixed(0) + " B/s";
   if (bps < 1048576) return (bps / 1024).toFixed(1) + " KB/s";
   return (bps / 1048576).toFixed(1) + " MB/s";
 }
+
 function genId() {
   return Math.random().toString(36).slice(2, 10).toUpperCase();
 }
+
 function nowTime() {
   return new Date().toTimeString().slice(0, 8);
 }
@@ -205,7 +258,38 @@ function listenForIce(roomId, fromId, callback) {
 }
 
 async function cleanupRoom(roomId) {
-  await remove(ref(db, `rooms/${roomId}`));
+  if (!roomId) return;
+  try {
+    // remove the main room (offers/answers/ice will be nested under this)
+    await remove(ref(db, `rooms/${roomId}`));
+  } catch (_) {}
+
+  try {
+    // also remove any parallel 'requests' node if used by deployments
+    await remove(ref(db, `requests/${roomId}`));
+  } catch (_) {}
+}
+
+// Remove stale rooms older than `ttlMs` (default 24 hours). This is best
+// effort and should only be used from clients with appropriate permissions
+// or from an admin/maintenance script.
+async function cleanupStaleRooms(ttlMs = 1000 * 60 * 60 * 24) {
+  try {
+    const snap = await get(ref(db, "rooms"));
+    if (!snap.exists()) return;
+    const now = Date.now();
+    const rooms = snap.val();
+    for (const [id, val] of Object.entries(rooms)) {
+      const ts = (val && val.offer && val.offer.ts) || (val && val.answer && val.answer.ts) || now;
+      if (now - ts > ttlMs) {
+        try {
+          await remove(ref(db, `rooms/${id}`));
+        } catch (_) {}
+      }
+    }
+  } catch (e) {
+    console.warn("cleanupStaleRooms error", e);
+  }
 }
 
 // ── LogView component ─────────────────────────────────────────────────────────
@@ -409,6 +493,17 @@ export default function App() {
     };
   }, [connModal]);
 
+  // Ensure we attempt to remove our room on page unload
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      try {
+        if (myIdRef.current) cleanupRoom(myIdRef.current).catch(() => {});
+      } catch (_) {}
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
   const pcRef = useRef(null); // RTCPeerConnection
   const dcRef = useRef(null); // RTCDataChannel
   const sharedKeyRef = useRef(null); // AES-GCM session key
@@ -439,8 +534,12 @@ export default function App() {
 
     return () => {
       cleanupListeners.current.forEach((fn) => fn());
+      cleanupListeners.current = [];
       if (pcRef.current) pcRef.current.close();
-      cleanupRoom(id);
+      // best-effort cleanup of our room on unmount
+      try {
+        cleanupRoom(id).catch(() => {});
+      } catch (_) {}
     };
   }, []);
 
@@ -477,7 +576,12 @@ export default function App() {
         setConnLabel("connected · e2e encrypted");
         setConnectedTo(remoteId);
         // Clean up signaling data — no longer needed
-        cleanupRoom(isCaller ? remoteId : remoteId); // both clean remoteId now
+        // attempt to remove both rooms (offer/answer + ice) where present
+        // remoteId: the other peer's room, myRoomId: this peer's room
+        try {
+          cleanupRoom(remoteId).catch(() => {});
+          cleanupRoom(myRoomId).catch(() => {});
+        } catch (_) {}
       }
       if (
         state === "failed" ||
@@ -810,9 +914,12 @@ export default function App() {
       setConnStatus("online");
       setConnLabel("ready · " + myIdRef.current);
       addLog("connection closed by user", "warn");
-      // attempt to cleanup signaling room for remote
+      // attempt to cleanup signaling rooms for both peers
       try {
         if (connectedTo) await cleanupRoom(connectedTo);
+      } catch (_) {}
+      try {
+        if (myIdRef.current) await cleanupRoom(myIdRef.current);
       } catch (_) {}
     } catch (e) {
       addLog("error during disconnect", "err");
@@ -1063,7 +1170,7 @@ export default function App() {
           },
           {
             label: "WebRTC P2P",
-            color: "#a99fff",
+            color: "#1a9e2c",
             bg: "rgba(124,111,255,0.08)",
           },
         ].map((b) => (
