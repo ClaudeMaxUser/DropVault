@@ -4,8 +4,6 @@
 
 ![WebRTC](https://img.shields.io/badge/WebRTC-P2P-blue) ![AES-256-GCM](https://img.shields.io/badge/AES--256--GCM-E2EE-34d399) ![React](https://img.shields.io/badge/React-18-61dafb) ![Vite](https://img.shields.io/badge/Vite-5-646cff)
 
-**[Live demo →]()**
-
 ---
 
 ## What it does
@@ -115,3 +113,9 @@ npm run preview
 ## License
 
 MIT
+
+---
+
+## Live demo
+
+[Live demo 449](https://ClaudeMaxUser.github.io/DropVault/)
