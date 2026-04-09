@@ -166,3 +166,39 @@ The sender saves progress to `localStorage` using a key derived from `filename +
 - **Compromised endpoint**: if the browser or OS is compromised, plaintext is accessible before encryption.
 - **Skipped fingerprint verification**: users who click Accept without comparing fingerprints out-of-band lose the MITM protection.
 - **Firebase account access**: a Firebase admin could observe SDP/ICE data, but this contains no file content or encryption keys.
+
+---
+
+## Firebase Signaling & Security
+
+DropVault uses Firebase Realtime Database only for WebRTC signaling (SDP and ICE). Because the client-side app is public, follow these recommendations to reduce abuse and privacy risk.
+
+- **Preferred: Server-side cleanup.** Run a scheduled Cloud Function to delete rooms older than 10 hours. This allows you to deny collection-level reads on `/rooms` in your rules (prevents enumeration) while still cleaning stale data.
+- **Enable App Check.** Enforce Firebase App Check to stop unauthorized scripted clients from writing to your database.
+- **Harden rules (summary):**
+  - Deny collection-level `.read` on `/rooms` when possible; allow reads only at `rooms/$roomId`.
+  - Validate `$roomId` format (e.g. `^[A-Z0-9]{8}$`).
+  - Enforce offer/answer payload shape and types (require `sdp`, `type`, `from`, `ts`) and reasonable size limits (e.g. SDP < 10 KB).
+  - Prefer write-once semantics for `offer`/`answer` (allow writes only when `!data.exists()`), if your reconnection flow permits.
+  - Validate `ice_caller` / `ice_callee` children and limit candidate field lengths.
+- **If you keep client-side cleanup:** you may need collection-level read access so clients can enumerate rooms to remove stale entries — accept the enumeration risk or move cleanup server-side.
+
+Example (concise rules snippet):
+
+```json
+{
+  "rules": {
+    "rooms": {
+      ".read": false,
+      "$roomId": {
+        ".validate": "$roomId.matches(/^[A-Z0-9]{8}$/)",
+        "offer": { ".write": true, ".validate": "newData.hasChildren(['sdp','type','from','ts'])" },
+        "answer": { ".write": true, ".validate": "newData.hasChildren(['sdp','type','from','ts'])" },
+        "ice_caller": { ".write": true },
+        "ice_callee": { ".write": true }
+      }
+    }
+  }
+}
+```
+

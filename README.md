@@ -118,4 +118,4 @@ MIT
 
 ## Live demo
 
-[Live demo 449](https://ClaudeMaxUser.github.io/DropVault/)
+[Live demo](https://ClaudeMaxUser.github.io/DropVault/)
