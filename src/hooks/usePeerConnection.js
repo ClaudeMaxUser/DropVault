@@ -67,7 +67,9 @@ export function usePeerConnection({ addLog, onMessage }) {
     permanentListeners.current.push(unsub);
 
     const onBeforeUnload = () => {
-      try { cleanupRoom(myIdRef.current).catch(() => {}); } catch (_) {}
+      try {
+        cleanupRoom(myIdRef.current).catch(() => {});
+      } catch (_) {}
     };
     window.addEventListener("beforeunload", onBeforeUnload);
 
@@ -78,9 +80,13 @@ export function usePeerConnection({ addLog, onMessage }) {
       connListeners.current = [];
       window.removeEventListener("beforeunload", onBeforeUnload);
       if (pcRef.current) {
-        try { pcRef.current.close(); } catch (_) {}
+        try {
+          pcRef.current.close();
+        } catch (_) {}
       }
-      try { cleanupRoom(id).catch(() => {}); } catch (_) {}
+      try {
+        cleanupRoom(id).catch(() => {});
+      } catch (_) {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -90,7 +96,9 @@ export function usePeerConnection({ addLog, onMessage }) {
     connListeners.current.forEach((fn) => fn());
     connListeners.current = [];
     if (pcRef.current) {
-      try { pcRef.current.close(); } catch (_) {}
+      try {
+        pcRef.current.close();
+      } catch (_) {}
       pcRef.current = null;
     }
     dcRef.current = null;
@@ -103,7 +111,12 @@ export function usePeerConnection({ addLog, onMessage }) {
   }
 
   // ── Init RTCPeerConnection ─────────────────────────────────────────────────
-  async function initConnection(isCaller, myRoomId, remoteId, incomingOffer = null) {
+  async function initConnection(
+    isCaller,
+    myRoomId,
+    remoteId,
+    incomingOffer = null,
+  ) {
     // Replace per-connection listeners on each new connection attempt
     connListeners.current.forEach((fn) => fn());
     connListeners.current = [];
@@ -114,17 +127,17 @@ export function usePeerConnection({ addLog, onMessage }) {
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) {
         // Log candidate types for debugging
-        const ctype = candidate.candidate.includes("relay") ? "relay" :
-                      candidate.candidate.includes("srflx") ? "srflx" :
-                      candidate.candidate.includes("host") ? "host" : "unknown";
-        if (ctype === "relay") {
-          addLog("ICE: relay candidate found (TURN working)", "ok");
-        }
-        sendIceCandidate(
-          remoteId,
-          isCaller ? "caller" : "callee",
-          candidate,
-        );
+        const ctype = candidate.candidate.includes("relay")
+          ? "relay"
+          : candidate.candidate.includes("srflx")
+            ? "srflx"
+            : candidate.candidate.includes("host")
+              ? "host"
+              : "unknown";
+        addLog(`ICE candidate: ${ctype}`, ctype === "relay" ? "ok" : "info");
+        sendIceCandidate(remoteId, isCaller ? "caller" : "callee", candidate);
+      } else {
+        addLog("ICE gathering complete", "info");
       }
     };
 
@@ -153,10 +166,18 @@ export function usePeerConnection({ addLog, onMessage }) {
         setConnStatus("online");
         setConnLabel("connected · e2e encrypted");
         setConnectedToSync(remoteId);
-        try { cleanupRoom(remoteId).catch(() => {}); } catch (_) {}
-        try { cleanupRoom(myRoomId).catch(() => {}); } catch (_) {}
+        try {
+          cleanupRoom(remoteId).catch(() => {});
+        } catch (_) {}
+        try {
+          cleanupRoom(myRoomId).catch(() => {});
+        } catch (_) {}
       }
-      if (state === "failed" || state === "disconnected" || state === "closed") {
+      if (
+        state === "failed" ||
+        state === "disconnected" ||
+        state === "closed"
+      ) {
         teardown("err");
       }
     };
@@ -186,7 +207,9 @@ export function usePeerConnection({ addLog, onMessage }) {
       }, OFFER_TIMEOUT_MS);
 
       const unsubIce = listenForIce(myRoomId, "callee", async (c) => {
-        try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (_) {}
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(c));
+        } catch (_) {}
       });
       connListeners.current.push(unsubIce);
     } else {
@@ -199,7 +222,9 @@ export function usePeerConnection({ addLog, onMessage }) {
       addLog("answer sent to " + remoteId, "ok");
 
       const unsubIce = listenForIce(myRoomId, "caller", async (c) => {
-        try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (_) {}
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(c));
+        } catch (_) {}
       });
       connListeners.current.push(unsubIce);
     }
@@ -244,7 +269,13 @@ export function usePeerConnection({ addLog, onMessage }) {
           const localPub = await exportPub(kp.publicKey);
           const remoteFp = await fingerprintFromPub(msg.pub);
           const localFp = await fingerprintFromPub(localPub);
-          setConnModal({ trigger: "request", remotePub: msg.pub, remoteFp, localFp, dc });
+          setConnModal({
+            trigger: "request",
+            remotePub: msg.pub,
+            remoteFp,
+            localFp,
+            dc,
+          });
           addLog("incoming connect request — verification required", "warn");
         }
 
@@ -257,8 +288,20 @@ export function usePeerConnection({ addLog, onMessage }) {
           // Now we have both fingerprints — update the modal that was already open
           setConnModal((prev) =>
             prev
-              ? { ...prev, trigger: "accept", remotePub: msg.pub, remoteFp, localFp }
-              : { trigger: "accept", remotePub: msg.pub, remoteFp, localFp, dc },
+              ? {
+                  ...prev,
+                  trigger: "accept",
+                  remotePub: msg.pub,
+                  remoteFp,
+                  localFp,
+                }
+              : {
+                  trigger: "accept",
+                  remotePub: msg.pub,
+                  remoteFp,
+                  localFp,
+                  dc,
+                },
           );
           addLog("remote accepted — verify fingerprint to complete", "info");
         }
@@ -283,7 +326,8 @@ export function usePeerConnection({ addLog, onMessage }) {
       teardown(null);
     };
 
-    dc.onerror = (e) => addLog("data channel error: " + formatRtcError(e), "err");
+    dc.onerror = (e) =>
+      addLog("data channel error: " + formatRtcError(e), "err");
   }
 
   // ── Modal handlers ─────────────────────────────────────────────────────────
@@ -302,7 +346,9 @@ export function usePeerConnection({ addLog, onMessage }) {
 
       if (connModal.trigger === "request") {
         const myPub = await exportPub(kp.publicKey);
-        try { dc.send(JSON.stringify({ type: "connect_accept", pub: myPub })); } catch (_) {}
+        try {
+          dc.send(JSON.stringify({ type: "connect_accept", pub: myPub }));
+        } catch (_) {}
       }
     } catch (e) {
       if (import.meta.env.DEV) console.error("key establishment error:", e);
@@ -314,7 +360,9 @@ export function usePeerConnection({ addLog, onMessage }) {
   const handleConnReject = useCallback(() => {
     if (!connModal) return;
     const { dc } = connModal;
-    try { if (dc) dc.send(JSON.stringify({ type: "connect_reject" })); } catch (_) {}
+    try {
+      if (dc) dc.send(JSON.stringify({ type: "connect_reject" }));
+    } catch (_) {}
     setConnModal(null);
     addLog("connection rejected by user", "warn");
     teardown("warn");
@@ -329,9 +377,13 @@ export function usePeerConnection({ addLog, onMessage }) {
     const remoteId = connectedToRef.current;
     teardown("warn");
     if (remoteId) {
-      try { await cleanupRoom(remoteId); } catch (_) {}
+      try {
+        await cleanupRoom(remoteId);
+      } catch (_) {}
     }
-    try { await cleanupRoom(myIdRef.current); } catch (_) {}
+    try {
+      await cleanupRoom(myIdRef.current);
+    } catch (_) {}
     addLog("disconnected by user", "warn");
   }, [addLog]);
 
@@ -339,15 +391,18 @@ export function usePeerConnection({ addLog, onMessage }) {
     setDisconnectModal(false);
   }, []);
 
-  const connectToPeer = useCallback(async (remotePeer) => {
-    if (!remotePeer.trim()) return;
-    const target = remotePeer.trim().toUpperCase();
-    addLog("connecting to: " + target, "info");
-    setConnStatus("connecting");
-    setConnLabel("sending offer...");
-    await initConnection(true, myIdRef.current, target);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addLog]);
+  const connectToPeer = useCallback(
+    async (remotePeer) => {
+      if (!remotePeer.trim()) return;
+      const target = remotePeer.trim().toUpperCase();
+      addLog("connecting to: " + target, "info");
+      setConnStatus("connecting");
+      setConnLabel("sending offer...");
+      await initConnection(true, myIdRef.current, target);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [addLog],
+  );
 
   return {
     myId,
