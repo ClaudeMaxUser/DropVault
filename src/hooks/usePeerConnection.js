@@ -112,12 +112,35 @@ export function usePeerConnection({ addLog, onMessage }) {
     pcRef.current = pc;
 
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate)
+      if (candidate) {
+        // Log candidate types for debugging
+        const ctype = candidate.candidate.includes("relay") ? "relay" :
+                      candidate.candidate.includes("srflx") ? "srflx" :
+                      candidate.candidate.includes("host") ? "host" : "unknown";
+        if (ctype === "relay") {
+          addLog("ICE: relay candidate found (TURN working)", "ok");
+        }
         sendIceCandidate(
           remoteId,
           isCaller ? "caller" : "callee",
           candidate,
         );
+      }
+    };
+
+    pc.onicegatheringstatechange = () => {
+      addLog("ICE gathering: " + pc.iceGatheringState, "info");
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      if (state === "failed") {
+        addLog("ICE connection failed — NAT/firewall may be blocking", "err");
+      } else if (state === "checking") {
+        addLog("ICE: checking connectivity...", "info");
+      } else if (state === "connected" || state === "completed") {
+        addLog("ICE: " + state, "ok");
+      }
     };
 
     pc.onconnectionstatechange = () => {
