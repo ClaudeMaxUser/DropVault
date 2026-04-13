@@ -5,6 +5,7 @@ const TURN_URLS = (import.meta.env.VITE_TURN_URLS || "").split(",").map(s => s.t
 const iceServers = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun.relay.metered.ca:80" },
 ];
 
 if (TURN_URLS.length && TURN_USERNAME && TURN_CREDENTIAL) {
