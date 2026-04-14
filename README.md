@@ -119,3 +119,57 @@ MIT
 ## Live demo
 
 [Live demo](https://ClaudeMaxUser.github.io/DropVault/)
+
+---
+
+## Troubleshooting — WebRTC connection failures (TURN / relay)
+
+If a connection fails with logs like this:
+
+```
+HH:MM:SS initializing...
+HH:MM:SS your peer id: MR02A5DF
+HH:MM:SS connecting to: SYY7B4QC
+HH:MM:SS ICE gathering: gathering
+HH:MM:SS ICE candidate: host
+HH:MM:SS ICE candidate: srflx
+HH:MM:SS offer sent, waiting for answer...
+HH:MM:SS answer received from SYY7B4QC
+HH:MM:SS ICE: checking connectivity...
+HH:MM:SS WebRTC: connecting
+HH:MM:SS WebRTC: failed
+HH:MM:SS connection closed
+HH:MM:SS data channel closed
+```
+
+then the remote peer is not receiving `relay` (TURN) candidates. Common causes:
+
+- TURN servers not configured or credentials invalid/expired.
+- TURN traffic blocked by the network or ISP (ports/protocols blocked).
+- TURN provider rejecting requests (rate limits, expired demo credentials).
+
+Quick checks:
+
+- Open DevTools Console and look for `[DropVault] ICE servers configured:` and `ICE candidate:` logs — you should see `relay`.
+- Verify `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL`, and `VITE_TURN_URLS` are set in `.env.local` (see [.env.example](.env.example)).
+- Force-test TURN from the browser (replace USER/CREDS):
+
+```javascript
+const pc = new RTCPeerConnection({
+    iceServers: [{ urls: "turn:global.relay.metered.ca:80", username:"VITE_TURN_USERNAME", credential:"VITE_TURN_CREDENTIAL" }],
+    iceTransportPolicy: "relay"
+});
+pc.createDataChannel("test");
+pc.createOffer().then(o => pc.setLocalDescription(o));
+pc.onicecandidate = e => { if (e.candidate) console.log("candidate:", e.candidate.candidate); else console.log("gathering done"); };
+```
+
+If you don't get a `relay` candidate:
+
+- Try a different network (mobile hotspot). If it works there, your ISP/network is blocking TURN.
+- Regenerate TURN credentials (e.g., https://www.metered.ca/stun-turn) or run your own `coturn`.
+- Ensure TURN URLs include TLS (use `turns:` on 443) for restrictive networks.
+
+Notes:
+
+- This project includes demo fallback TURN entries, but demo credentials may be rate-limited or expired. For reliable cross-network transfers, use your own TURN credentials or a hosted TURN provider.
